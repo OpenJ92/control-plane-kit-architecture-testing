@@ -110,6 +110,7 @@ class GenesisPackageTests(unittest.TestCase):
             "python:3.14",
             "python -m unittest discover -s tests -v",
             "python -m compileall src tests",
+            "python -m pip install --no-build-isolation --no-deps /tmp/install-source",
             "python -m build --sdist --wheel",
         ):
             with self.subTest(marker=marker):
