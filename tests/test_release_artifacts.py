@@ -22,11 +22,13 @@ from release_build_fixture import (
     SDIST_SOURCES_NAME,
     SOURCE_DATE_EPOCH,
     WHEEL_MEMBER_CONTENTS,
+    WHEEL_NAME,
     WHEEL_RECORD_NAME,
     captured_error,
     closure_mutations,
     release_report,
     require_release,
+    source_metadata,
     write_artifacts,
     write_sdist,
     write_wheel,
@@ -196,6 +198,112 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
             self.assertEqual(message.get_payload(), (ROOT / "README.md").read_text("utf-8"))
             self.assertIsNone(message.get_all("Requires-Dist"))
             self.assertIsNone(message.get_all("Provides-Extra"))
+
+    def test_verifier_rejects_coherent_foreign_declared_metadata_semantics(self) -> None:
+        release = require_release(self)
+        accepted = source_metadata()
+        readme = (ROOT / "README.md").read_bytes()
+        mutations = (
+            (
+                "summary",
+                b"Summary: Immutable architecture testing language for Control Plane Kit repositories\n",
+                b"Summary: Foreign architecture testing language\n",
+            ),
+            ("author", b"Author: OpenJ92\n", b"Author: Foreign Author\n"),
+            (
+                "license expression",
+                b"License-Expression: MIT\n",
+                b"License-Expression: Apache-2.0\n",
+            ),
+            ("license file", b"License-File: LICENSE\n", b"License-File: COPYING\n"),
+            (
+                "repository URL",
+                b"Project-URL: Repository, https://github.com/OpenJ92/control-plane-kit-architecture-testing\n",
+                b"Project-URL: Repository, https://example.invalid/foreign\n",
+            ),
+            (
+                "Python floor",
+                b"Requires-Python: >=3.11\n",
+                b"Requires-Python: >=3.12\n",
+            ),
+            (
+                "description content type",
+                b"Description-Content-Type: text/markdown\n",
+                b"Description-Content-Type: text/plain\n",
+            ),
+            ("README payload", b"\n" + readme, b"\n# Foreign payload\n"),
+        )
+        for name, old, new in mutations:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                self.assertEqual(accepted.count(old), 1)
+                candidate = accepted.replace(old, new, 1)
+                message = BytesParser(policy=policy.default).parsebytes(candidate)
+                self.assertIsNone(message.get_all("Requires-Dist"))
+                self.assertIsNone(message.get_all("Provides-Extra"))
+
+                wheel_members = dict(WHEEL_MEMBER_CONTENTS)
+                wheel_members[WHEEL_METADATA_NAME] = candidate
+                sdist_members = dict(SDIST_MEMBER_CONTENTS)
+                sdist_members["PKG-INFO"] = candidate
+                sdist_members[
+                    "src/control_plane_kit_architecture_testing.egg-info/PKG-INFO"
+                ] = candidate
+
+                root = Path(directory)
+                wheel = write_wheel(root, members=wheel_members)
+                sdist = write_sdist(root, members=sdist_members)
+                self.assert_wheel_record_is_consistent(wheel)
+                self.assert_sdist_sources_are_consistent(sdist)
+                self.assertEqual(
+                    self.archive_metadata(wheel, sdist),
+                    (candidate, candidate, candidate),
+                )
+                report = release_report(release, root)
+                error = captured_error(
+                    self,
+                    release.ReleaseBuildReportError,
+                    lambda: release.verify_release_report(report, root),
+                )
+                self.assertEqual(str(error), "release artifact set is invalid")
+
+    def test_verifier_rejects_foreign_archived_project_with_accepted_metadata(self) -> None:
+        release = require_release(self)
+        accepted_pyproject = (ROOT / "pyproject.toml").read_bytes()
+        old = (
+            b'description = "Immutable architecture testing language for Control Plane Kit repositories"\n'
+        )
+        new = b'description = "Foreign architecture testing language"\n'
+        self.assertEqual(accepted_pyproject.count(old), 1)
+        candidate_pyproject = accepted_pyproject.replace(old, new, 1)
+        accepted_document = tomllib.loads(accepted_pyproject.decode("utf-8"))
+        candidate_document = tomllib.loads(candidate_pyproject.decode("utf-8"))
+        self.assertNotEqual(
+            accepted_document["project"]["description"],
+            candidate_document["project"]["description"],
+        )
+        candidate_document["project"]["description"] = accepted_document["project"][
+            "description"
+        ]
+        self.assertEqual(candidate_document, accepted_document)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_wheel(root)
+            sdist_members = dict(SDIST_MEMBER_CONTENTS)
+            sdist_members["pyproject.toml"] = candidate_pyproject
+            sdist = write_sdist(root, members=sdist_members)
+            self.assert_sdist_sources_are_consistent(sdist)
+            self.assertEqual(
+                self.archive_metadata(root / WHEEL_NAME, sdist),
+                (source_metadata(), source_metadata(), source_metadata()),
+            )
+            report = release_report(release, root)
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(report, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
 
     def test_verifier_binds_tar_and_utc_zip_times_to_the_report_epoch(self) -> None:
         release = require_release(self)
