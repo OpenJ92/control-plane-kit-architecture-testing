@@ -13,15 +13,25 @@ if package.__version__ != "0.1.0":
 if package.__all__ != (
     "__version__",
     "AliasBinding",
+    "ArchitecturePolicy",
     "CallFact",
     "CallTarget",
+    "ExactCallSurfacePolicy",
+    "ExactImportSurfacePolicy",
     "ImportFact",
+    "ImportSurfaceEntry",
+    "PolicyEvaluationError",
+    "PolicyFinding",
+    "PolicyId",
     "PythonSourceFacts",
     "ResolvedCallTarget",
+    "RuleId",
     "SourceAnalysisError",
     "SourceLocation",
     "UnresolvedCallTarget",
     "analyze_source",
+    "evaluate_policies",
+    "evaluate_policy",
 ):
     raise SystemExit("unexpected installed package root exports")
 if importlib.metadata.version("control-plane-kit-architecture-testing") != "0.1.0":
