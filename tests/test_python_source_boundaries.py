@@ -43,19 +43,43 @@ class PythonSourceBoundaryTests(unittest.TestCase):
 
     def test_source_size_is_exact_utf8_length_at_maximum_and_plus_one(self) -> None:
         language = require_language(self)
-        maximum = "#" + ("x" * (SOURCE_LIMIT - 2)) + "\n"
-        plus_one = maximum[:-1] + "x\n"
-        self.assertEqual(len(maximum.encode("utf-8")), SOURCE_LIMIT)
-        self.assertEqual(len(plus_one.encode("utf-8")), SOURCE_LIMIT + 1)
-        self.assertEqual(language.analyze_source(maximum, path="max.py", module="max").calls, ())
-
-        error = captured_error(
-            self,
-            language.SourceAnalysisError,
-            lambda: language.analyze_source(plus_one, path="plus.py", module="plus"),
+        maximum_ascii = "#" + ("x" * (SOURCE_LIMIT - 2)) + "\n"
+        plus_one_ascii = maximum_ascii[:-1] + "x\n"
+        maximum_multibyte = "#" + ("é" * 524_287) + "\n"
+        plus_one_multibyte = "#x" + ("é" * 524_287) + "\n"
+        self.assertEqual(len(maximum_ascii.encode("utf-8")), SOURCE_LIMIT)
+        self.assertEqual(len(plus_one_ascii.encode("utf-8")), SOURCE_LIMIT + 1)
+        self.assertEqual(len(maximum_multibyte), 524_289)
+        self.assertEqual(len(maximum_multibyte.encode("utf-8")), SOURCE_LIMIT)
+        self.assertEqual(len(plus_one_multibyte.encode("utf-8")), SOURCE_LIMIT + 1)
+        self.assertEqual(
+            language.analyze_source(maximum_ascii, path="max.py", module="max").calls,
+            (),
         )
-        self.assertNotIn("xxx", str(error))
-        self.assertLessEqual(len(str(error)), 600)
+        self.assertEqual(
+            language.analyze_source(
+                maximum_multibyte,
+                path="max_unicode.py",
+                module="max_unicode",
+            ).calls,
+            (),
+        )
+
+        for source, path, module in (
+            (plus_one_ascii, "plus.py", "plus"),
+            (plus_one_multibyte, "plus_unicode.py", "plus_unicode"),
+        ):
+            with self.subTest(path=path):
+                error = captured_error(
+                    self,
+                    language.SourceAnalysisError,
+                    lambda source=source, path=path, module=module: language.analyze_source(
+                        source, path=path, module=module
+                    ),
+                )
+                self.assertNotIn("xxx", str(error))
+                self.assertNotIn("ééé", str(error))
+                self.assertLessEqual(len(str(error)), 600)
 
     def test_malformed_source_error_is_bounded_redacted_and_context_free(self) -> None:
         language = require_language(self)

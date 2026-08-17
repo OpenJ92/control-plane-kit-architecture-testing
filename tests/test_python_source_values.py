@@ -96,6 +96,27 @@ class PythonSourceValueTests(unittest.TestCase):
             language.AliasBinding("execute", ".helpers.run"),
         )
 
+        for local_name, qualified_name in (
+            ("", "package.run"),
+            ("a" * 513, "package.run"),
+            ("bad\x00alias", "package.run"),
+            ("bad\ud800alias", "package.run"),
+            (HostileStr("execute"), "package.run"),
+            ("execute", ""),
+            ("execute", "q" * 4097),
+            ("execute", "bad\x00name"),
+            ("execute", "bad\ud800name"),
+            ("execute", HostileStr("package.run")),
+        ):
+            with self.subTest(local_name=type(local_name), qualified_name=type(qualified_name)):
+                captured_error(
+                    self,
+                    (TypeError, ValueError),
+                    lambda local_name=local_name, qualified_name=qualified_name: language.AliasBinding(
+                        local_name, qualified_name
+                    ),
+                )
+
         invalid = (
             ("package", None, None),
             ("package", "*", "star"),
@@ -148,6 +169,25 @@ class PythonSourceValueTests(unittest.TestCase):
                     lambda target=target: language.CallFact(target, location),
                 )
 
+        forged_locations = (
+            forge(language.SourceLocation, path="sample.py", line=True, column=0),
+            forge(
+                language.SourceLocation,
+                path=HostileStr("sample.py"),
+                line=1,
+                column=0,
+            ),
+        )
+        for forged_location in forged_locations:
+            with self.subTest(location=forged_location):
+                captured_error(
+                    self,
+                    (TypeError, ValueError),
+                    lambda forged_location=forged_location: language.CallFact(
+                        resolved, forged_location
+                    ),
+                )
+
     def test_python_source_facts_require_exact_tuples_and_derived_aliases(self) -> None:
         language = require_language(self)
         location = language.SourceLocation("sample.py", 1, 0)
@@ -177,6 +217,16 @@ class PythonSourceValueTests(unittest.TestCase):
                 (alias,),
                 (call,),
             ),
+            (
+                (import_fact,),
+                (alias,),
+                (
+                    language.CallFact(
+                        language.ResolvedCallTarget("package.module.run"),
+                        language.SourceLocation("other.py", 2, 0),
+                    ),
+                ),
+            ),
         )
         for imports, aliases, calls in invalid:
             with self.subTest(imports=type(imports), aliases=type(aliases), calls=type(calls)):
@@ -185,6 +235,28 @@ class PythonSourceValueTests(unittest.TestCase):
                     (TypeError, ValueError),
                     lambda imports=imports, aliases=aliases, calls=calls: language.PythonSourceFacts(
                         "sample.py", "sample", imports, aliases, calls
+                    ),
+                )
+
+        invalid_coordinates = (
+            ("", "sample"),
+            ("p" * 513, "sample"),
+            ("bad\x00path", "sample"),
+            ("bad\ud800path", "sample"),
+            (HostileStr("sample.py"), "sample"),
+            ("sample.py", ""),
+            ("sample.py", "m" * 513),
+            ("sample.py", "bad\x00module"),
+            ("sample.py", "bad\ud800module"),
+            ("sample.py", HostileStr("sample")),
+        )
+        for path, module in invalid_coordinates:
+            with self.subTest(path=type(path), module=type(module)):
+                captured_error(
+                    self,
+                    (TypeError, ValueError),
+                    lambda path=path, module=module: language.PythonSourceFacts(
+                        path, module, (), (), ()
                     ),
                 )
 
@@ -210,7 +282,7 @@ class PythonSourceValueTests(unittest.TestCase):
             location=forged_location,
         )
         candidates = (
-            ((forged_import,), (), ()),
+            ((forged_import,), (language.AliasBinding("package", "package"),), ()),
             ((), (), (forged_call,)),
             ((), (), (forge(language.CallFact, target=target, location=forged_location),)),
         )

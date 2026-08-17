@@ -10,7 +10,19 @@ PACKAGE_ROOT = Path(package.__file__).resolve().parent
 
 if package.__version__ != "0.1.0":
     raise SystemExit("unexpected installed package version")
-if package.__all__ != ("__version__",):
+if package.__all__ != (
+    "__version__",
+    "AliasBinding",
+    "CallFact",
+    "CallTarget",
+    "ImportFact",
+    "PythonSourceFacts",
+    "ResolvedCallTarget",
+    "SourceAnalysisError",
+    "SourceLocation",
+    "UnresolvedCallTarget",
+    "analyze_source",
+):
     raise SystemExit("unexpected installed package root exports")
 if importlib.metadata.version("control-plane-kit-architecture-testing") != "0.1.0":
     raise SystemExit("unexpected installed distribution version")
