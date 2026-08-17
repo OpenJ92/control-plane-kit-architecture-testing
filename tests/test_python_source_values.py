@@ -22,7 +22,7 @@ class PythonSourceValueTests(unittest.TestCase):
         language = require_language(self)
         expected_fields = {
             "SourceLocation": ("path", "line", "column"),
-            "ImportFact": ("module", "imported_name", "bound_name", "location"),
+            "ImportFact": ("module", "imported_name", "alias_name", "location"),
             "AliasBinding": ("local_name", "qualified_name"),
             "ResolvedCallTarget": ("qualified_name",),
             "UnresolvedCallTarget": (),
@@ -83,15 +83,32 @@ class PythonSourceValueTests(unittest.TestCase):
         language = require_language(self)
         location = language.SourceLocation("sample.py", 1, 0)
         values = (
+            language.ImportFact("package.module", None, None, location),
             language.ImportFact("package.module", None, "package", location),
             language.ImportFact("package.module", None, "selected", location),
             language.ImportFact(".helpers", "run", "execute", location),
+            language.ImportFact(".helpers", "run", None, location),
             language.ImportFact("package", "*", None, location),
         )
         self.assertEqual(
-            tuple(value.qualified_name for value in values),
-            ("package.module", "package.module", ".helpers.run", "package.*"),
+            tuple(
+                (
+                    value.alias_name,
+                    value.bound_name,
+                    value.qualified_name,
+                )
+                for value in values
+            ),
+            (
+                (None, "package", "package.module"),
+                ("package", "package", "package.module"),
+                ("selected", "selected", "package.module"),
+                ("execute", "execute", ".helpers.run"),
+                (None, "run", ".helpers.run"),
+                (None, None, "package.*"),
+            ),
         )
+        self.assertNotEqual(values[0], values[1])
         self.assertEqual(
             language.AliasBinding("execute", ".helpers.run"),
             language.AliasBinding("execute", ".helpers.run"),
@@ -104,6 +121,7 @@ class PythonSourceValueTests(unittest.TestCase):
         )
         self.assertEqual(maximum.module, "m" * 512)
         self.assertEqual(maximum.imported_name, "i" * 512)
+        self.assertEqual(maximum.alias_name, "b" * 512)
         self.assertEqual(maximum.bound_name, "b" * 512)
 
         bounded_invalid = (
@@ -118,20 +136,20 @@ class PythonSourceValueTests(unittest.TestCase):
             ("package", "run", "bad\ud800binding"),
         )
         bounded_errors = []
-        for module, imported_name, bound_name in bounded_invalid:
+        for module, imported_name, alias_name in bounded_invalid:
             with self.subTest(
                 module=module[:8],
                 imported_name=imported_name[:8],
-                bound_name=bound_name[:8],
+                alias_name=alias_name[:8],
             ):
                 bounded_errors.append(
                     captured_error(
                         self,
                         (TypeError, ValueError),
-                        lambda module=module, imported_name=imported_name, bound_name=bound_name: language.ImportFact(
+                        lambda module=module, imported_name=imported_name, alias_name=alias_name: language.ImportFact(
                             module,
                             imported_name,
-                            bound_name,
+                            alias_name,
                             location,
                         ),
                     )
@@ -164,9 +182,7 @@ class PythonSourceValueTests(unittest.TestCase):
                 )
 
         invalid = (
-            ("package", None, None),
             ("package", "*", "star"),
-            ("package", "run", None),
             ("", "run", "run"),
             (HostileStr("package"), None, "package"),
             ("package", HostileStr("run"), "run"),
@@ -237,7 +253,7 @@ class PythonSourceValueTests(unittest.TestCase):
     def test_python_source_facts_require_exact_tuples_and_derived_aliases(self) -> None:
         language = require_language(self)
         location = language.SourceLocation("sample.py", 1, 0)
-        import_fact = language.ImportFact("package.module", None, "package", location)
+        import_fact = language.ImportFact("package.module", None, None, location)
         alias = language.AliasBinding("package", "package")
         call = language.CallFact(
             language.ResolvedCallTarget("package.module.run"),
@@ -259,7 +275,7 @@ class PythonSourceValueTests(unittest.TestCase):
             ((import_fact,), (), (call,)),
             ((import_fact,), (language.AliasBinding("package", "other"),), (call,)),
             (
-                (language.ImportFact("package", None, "package", language.SourceLocation("other.py", 1, 0)),),
+                (language.ImportFact("package", None, None, language.SourceLocation("other.py", 1, 0)),),
                 (alias,),
                 (call,),
             ),
@@ -324,7 +340,7 @@ class PythonSourceValueTests(unittest.TestCase):
             language.ImportFact,
             module="package",
             imported_name=None,
-            bound_name="package",
+            alias_name=None,
             location=forged_location,
         )
         candidates = (

@@ -22,16 +22,22 @@ class PythonSourceAnalysisTests(unittest.TestCase):
 
         self.assertEqual(
             tuple(
-                (value.module, value.imported_name, value.bound_name, value.qualified_name)
+                (
+                    value.module,
+                    value.imported_name,
+                    value.alias_name,
+                    value.bound_name,
+                    value.qualified_name,
+                )
                 for value in facts.imports
             ),
             (
-                ("os", None, "os", "os"),
-                ("package.module", None, "package", "package.module"),
-                ("another.module", None, "selected", "another.module"),
-                (".helpers", "run", "execute", ".helpers.run"),
-                (".", "local", "local", ".local"),
-                ("package", "*", None, "package.*"),
+                ("os", None, None, "os", "os"),
+                ("package.module", None, None, "package", "package.module"),
+                ("another.module", None, "selected", "selected", "another.module"),
+                (".helpers", "run", "execute", "execute", ".helpers.run"),
+                (".", "local", None, "local", ".local"),
+                ("package", "*", None, None, "package.*"),
             ),
         )
         self.assertEqual(
@@ -64,6 +70,32 @@ class PythonSourceAnalysisTests(unittest.TestCase):
             tuple(value.target.qualified_name for value in facts.calls),
             ("package.module.run", "another.module.run"),
         )
+
+    def test_explicit_same_root_alias_is_distinct_from_implicit_dotted_binding(self) -> None:
+        language = require_language(self)
+        implicit = language.analyze_source(
+            "import package.module\npackage.run()\n",
+            path="implicit.py",
+            module="implicit",
+        )
+        explicit = language.analyze_source(
+            "import package.module as package\npackage.run()\n",
+            path="explicit.py",
+            module="explicit",
+        )
+
+        self.assertEqual(implicit.imports[0].alias_name, None)
+        self.assertEqual(explicit.imports[0].alias_name, "package")
+        self.assertNotEqual(implicit.imports[0], explicit.imports[0])
+        self.assertEqual(implicit.imports[0].bound_name, "package")
+        self.assertEqual(explicit.imports[0].bound_name, "package")
+        self.assertEqual(implicit.aliases, (language.AliasBinding("package", "package"),))
+        self.assertEqual(
+            explicit.aliases,
+            (language.AliasBinding("package", "package.module"),),
+        )
+        self.assertEqual(implicit.calls[0].target.qualified_name, "package.run")
+        self.assertEqual(explicit.calls[0].target.qualified_name, "package.module.run")
 
     def test_wildcard_and_conflicting_aliases_are_conservatively_unresolved(self) -> None:
         language = require_language(self)
