@@ -76,7 +76,7 @@ class GenesisPackageTests(unittest.TestCase):
         self.assertEqual(
             document["build-system"],
             {
-                "requires": ["setuptools==80.9.0"],
+                "requires": ["setuptools==83.0.0"],
                 "build-backend": "setuptools.build_meta",
             },
         )
