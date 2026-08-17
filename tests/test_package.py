@@ -65,7 +65,7 @@ class GenesisPackageTests(unittest.TestCase):
         self.assertEqual(PACKAGE.__version__, "0.1.0")
         self.assertEqual(
             {name for name in PACKAGE.__dict__ if not name.startswith("__")},
-            (set(PACKAGE.__all__) - {"__version__"}) | {"python_source"},
+            (set(PACKAGE.__all__) - {"__version__"}) | {"architecture_policy", "python_source"},
         )
 
     def test_project_metadata_is_exact_and_runtime_dependency_free(self) -> None:
