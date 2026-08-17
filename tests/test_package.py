@@ -33,14 +33,29 @@ class GenesisPackageTests(unittest.TestCase):
         self.assertEqual(ROOT.name, "source")
         self.assertTrue((ROOT / "tests" / "test_package.py").is_file())
 
-    def test_root_package_exports_only_version(self) -> None:
+    def test_root_package_exports_exact_accepted_surface(self) -> None:
         self.assertIsNotNone(PACKAGE, "genesis package namespace is not implemented")
         self.assertEqual(type(PACKAGE.__all__), tuple)
-        self.assertEqual(PACKAGE.__all__, ("__version__",))
+        self.assertEqual(
+            PACKAGE.__all__,
+            (
+                "__version__",
+                "AliasBinding",
+                "CallFact",
+                "CallTarget",
+                "ImportFact",
+                "PythonSourceFacts",
+                "ResolvedCallTarget",
+                "SourceAnalysisError",
+                "SourceLocation",
+                "UnresolvedCallTarget",
+                "analyze_source",
+            ),
+        )
         self.assertEqual(PACKAGE.__version__, "0.1.0")
         self.assertEqual(
             {name for name in PACKAGE.__dict__ if not name.startswith("__")},
-            set(),
+            (set(PACKAGE.__all__) - {"__version__"}) | {"python_source"},
         )
 
     def test_project_metadata_is_exact_and_runtime_dependency_free(self) -> None:
