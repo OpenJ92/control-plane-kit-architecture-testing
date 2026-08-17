@@ -247,6 +247,81 @@ class ArchitecturePolicyEvaluationTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].message, value.message)
 
+    def test_batch_deep_validates_each_exact_fact_and_policy_only_once(self) -> None:
+        language = require_language(self)
+        policy = require_policy_language(self)
+        location = language.SourceLocation("shared.py", 1, 0)
+        occurrence = language.CallFact(language.ResolvedCallTarget("run"), location)
+        facts = language.PythonSourceFacts(
+            "shared.py",
+            "shared",
+            (),
+            (),
+            tuple(occurrence for _ in range(64)),
+        )
+        first = policy.ExactImportSurfacePolicy(
+            policy.PolicyId("a-policy"),
+            policy.RuleId("imports"),
+            facts.path,
+            facts.module,
+            (policy.ImportSurfaceEntry("missing-a", None, None),),
+            "a-message",
+        )
+        second = policy.ExactImportSurfacePolicy(
+            policy.PolicyId("b-policy"),
+            policy.RuleId("imports"),
+            facts.path,
+            facts.module,
+            (policy.ImportSurfaceEntry("missing-b", None, None),),
+            "b-message",
+        )
+        fact_canary = RuntimeError("fact was deeply validated twice")
+        policy_canary = RuntimeError("policy was deeply validated twice")
+        fact_validations = []
+        policy_validations = []
+        original_fact_validator = policy._valid_source_facts
+        original_policy_validator = policy._valid_policy
+
+        def validate_fact(value):
+            identity = id(value)
+            if identity in fact_validations:
+                raise fact_canary
+            fact_validations.append(identity)
+            return original_fact_validator(value)
+
+        def validate_policy(value):
+            identity = id(value)
+            if identity in policy_validations:
+                raise policy_canary
+            policy_validations.append(identity)
+            return original_policy_validator(value)
+
+        with (
+            mock.patch.object(policy, "_valid_source_facts", side_effect=validate_fact),
+            mock.patch.object(policy, "_valid_policy", side_effect=validate_policy),
+        ):
+            findings = policy.evaluate_policies((facts,), (second, first))
+
+        self.assertEqual(fact_validations, [id(facts)])
+        self.assertEqual(policy_validations, [id(second), id(first)])
+        self.assertEqual(
+            findings,
+            (
+                policy.PolicyFinding(
+                    first.policy_id,
+                    first.rule_id,
+                    location,
+                    first.message,
+                ),
+                policy.PolicyFinding(
+                    second.policy_id,
+                    second.rule_id,
+                    location,
+                    second.message,
+                ),
+            ),
+        )
+
     def test_aggregate_occurrence_work_exact_max_and_plus_one_precede_deep_dispatch(self) -> None:
         language = require_language(self)
         policy = require_policy_language(self)
