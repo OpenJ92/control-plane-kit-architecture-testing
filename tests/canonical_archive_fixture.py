@@ -33,6 +33,7 @@ MAX_EXPANDED_BYTES = 8_388_608
 MAX_MEMBER_NAME_BYTES = 512
 SETUP_CFG_NAME = "setup.cfg"
 SETUP_CFG = b"[egg_info]\ntag_build =\ntag_date = 0\n"
+SDIST_GZIP_FILENAME = (SDIST_PREFIX + ".tar").encode("ascii")
 
 
 def load_canonical_archives() -> ModuleType | None:
@@ -195,6 +196,10 @@ def sdist_variant_bytes(
     renamed: tuple[str, str] | None = None,
     member_type: tuple[str, bytes] | None = None,
     pax_member: str | None = None,
+    omit_directory: str | None = None,
+    extra_directory: str | None = None,
+    duplicate_directory: str | None = None,
+    directory_type: tuple[str, bytes] | None = None,
 ) -> bytes:
     entries = [
         (name, payload)
@@ -214,13 +219,25 @@ def sdist_variant_bytes(
 
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=archive_format) as archive:
-        directories = ["", *SDIST_DIRECTORY_MEMBERS]
+        directories = [
+            relative
+            for relative in ("", *SDIST_DIRECTORY_MEMBERS)
+            if relative != omit_directory
+        ]
+        if extra_directory is not None:
+            directories.append(extra_directory)
+        if duplicate_directory is not None:
+            directories.append(duplicate_directory)
         if reverse_directories:
             directories.reverse()
         for relative in directories:
             name = SDIST_PREFIX if not relative else f"{SDIST_PREFIX}/{relative}"
             info = tarfile.TarInfo(name)
-            info.type = tarfile.DIRTYPE
+            info.type = (
+                directory_type[1]
+                if directory_type is not None and relative == directory_type[0]
+                else tarfile.DIRTYPE
+            )
             info.mode = 0o775 if ordinary_modes else 0o755
             info.uid = uid
             info.gid = gid
@@ -355,6 +372,9 @@ def wheel_variant_bytes(
     nonseekable: bool = False,
     force_zip64: bool = False,
     members: dict[str, bytes] | None = None,
+    member_extra: tuple[str, bytes] | None = None,
+    member_comment: tuple[str, bytes] | None = None,
+    create_system: int = 3,
 ) -> bytes:
     selected = WHEEL_MEMBER_CONTENTS if members is None else members
     entries = [(name, payload) for name, payload in selected.items() if name != omit]
@@ -376,8 +396,12 @@ def wheel_variant_bytes(
         archive.comment = comment
         for index, (name, payload) in enumerate(entries):
             info = zipfile.ZipInfo(name, date_time=_zip_datetime(SOURCE_DATE_EPOCH + epoch_offset))
-            info.create_system = 3
+            info.create_system = create_system
             info.compress_type = compression
+            if member_extra is not None and name == member_extra[0]:
+                info.extra = member_extra[1]
+            if member_comment is not None and name == member_comment[0]:
+                info.comment = member_comment[1]
             selected_mode = (
                 stat.S_IFLNK | 0o777
                 if name == symlink
@@ -492,7 +516,7 @@ def admitted_sdist_variants() -> tuple[tuple[str, bytes], ...]:
             sdist_variant_bytes(uid=41, gid=42, uname="builder", gname="builder"),
         ),
         ("ordinary modes", sdist_variant_bytes(ordinary_modes=True)),
-        ("gzip FNAME", sdist_variant_bytes(gzip_filename=b"candidate.tar")),
+        ("gzip FNAME", sdist_variant_bytes(gzip_filename=SDIST_GZIP_FILENAME)),
         *(
             (f"setup formatting {index}", sdist_variant_bytes(setup_cfg=value))
             for index, value in enumerate(setup_variants)
@@ -509,6 +533,7 @@ def invalid_sdist_variants() -> tuple[tuple[str, bytes], ...]:
         ("gzip multistream", accepted + accepted),
         ("gzip extra", sdist_variant_bytes(gzip_extra=b"candidate")),
         ("gzip comment", sdist_variant_bytes(gzip_comment=b"candidate")),
+        ("gzip foreign FNAME", sdist_variant_bytes(gzip_filename=b"candidate.tar")),
         ("gzip trailer", bytes(trailer)),
         ("tar duplicate", sdist_variant_bytes(duplicate="AGENTS.md")),
         ("tar traversal", sdist_variant_bytes(renamed=("AGENTS.md", "../AGENTS.md"))),
@@ -534,6 +559,13 @@ def invalid_sdist_variants() -> tuple[tuple[str, bytes], ...]:
         ("tar device", sdist_variant_bytes(member_type=("AGENTS.md", tarfile.CHRTYPE))),
         ("tar unknown", sdist_variant_bytes(extra_member=("candidate", b""))),
         ("tar missing", sdist_variant_bytes(omit="AGENTS.md")),
+        ("parent missing", sdist_variant_bytes(omit_directory="src")),
+        ("parent extra", sdist_variant_bytes(extra_directory="candidate")),
+        ("parent duplicate", sdist_variant_bytes(duplicate_directory="src")),
+        (
+            "parent wrong type",
+            sdist_variant_bytes(directory_type=("src", tarfile.REGTYPE)),
+        ),
         (
             "setup duplicate section",
             sdist_variant_bytes(setup_cfg=SETUP_CFG + b"[egg_info]\ntag_date=0\n"),
@@ -616,6 +648,25 @@ def invalid_wheel_variants() -> tuple[tuple[str, bytes], ...]:
         ),
         ("extra", wheel_variant_bytes(extra_member=("candidate", b""))),
         ("comment", wheel_variant_bytes(comment=b"candidate")),
+        (
+            "member extra",
+            wheel_variant_bytes(
+                member_extra=(
+                    "control_plane_kit_architecture_testing/py.typed",
+                    b"\xfe\xca\x04\x00test",
+                )
+            ),
+        ),
+        (
+            "member comment",
+            wheel_variant_bytes(
+                member_comment=(
+                    "control_plane_kit_architecture_testing/py.typed",
+                    b"candidate",
+                )
+            ),
+        ),
+        ("non-Unix", wheel_variant_bytes(create_system=0)),
         ("encryption", encrypted_wheel_bytes()),
         ("data descriptor", wheel_variant_bytes(nonseekable=True)),
         ("ZIP64", wheel_variant_bytes(force_zip64=True)),

@@ -13,6 +13,7 @@ from canonical_archive_fixture import (
     MAX_MEMBERS,
     SOURCE_DATE_EPOCH,
     captured_error,
+    gzip_document,
     require_canonical,
 )
 
@@ -126,27 +127,75 @@ class CanonicalArchiveBoundaryTests(unittest.TestCase):
         reads, result = invoke(exact)
         self.assertEqual(reads, [name for name, _ in exact])
         self.assertIsNotNone(result)
-        over = (*exact[:-1], (exact[-1][0], exact[-1][1] + 1))
+        over = (*exact, ("payload-8", 1))
+        self.assertTrue(all(size <= MAX_MEMBER_BYTES for _, size in over))
+        self.assertEqual(sum(size for _, size in over), MAX_EXPANDED_BYTES + 1)
         reads, result = invoke(over)
         self.assertEqual(reads, [])
         self.assertIsNone(result)
+
+        for actual in (b"", b"xx"):
+            reads = []
+
+            def mismatched_read(name: str) -> bytes:
+                reads.append(name)
+                return actual
+
+            error = captured_error(
+                self,
+                language.CanonicalArchiveError,
+                lambda: bounded_read((("payload", 1),), mismatched_read),
+            )
+            self.assertEqual(str(error), "release archive is invalid")
+            self.assertEqual(reads, ["payload"])
 
         read_fault = RuntimeError("payload reader canary")
         with self.assertRaises(RuntimeError) as raised:
             bounded_read((("payload", 0),), lambda name: (_ for _ in ()).throw(read_fault))
         self.assertIs(raised.exception, read_fault)
 
+    def test_bounded_gzip_expansion_precedes_owned_tar_decode_boundary(self) -> None:
+        language = require_canonical(self)
+        dispatches: list[int] = []
+
+        def tar_canary(payload: bytes) -> object:
+            dispatches.append(len(payload))
+            raise RuntimeError("owned tar decoder canary")
+
+        with mock.patch.object(language, "_decode_tar", tar_canary):
+            with self.assertRaisesRegex(RuntimeError, "owned tar decoder canary"):
+                language.canonicalize_sdist(
+                    gzip_document(b"x" * MAX_EXPANDED_BYTES),
+                    source_date_epoch=SOURCE_DATE_EPOCH,
+                )
+            self.assertEqual(dispatches, [MAX_EXPANDED_BYTES])
+            dispatches.clear()
+            error = captured_error(
+                self,
+                language.CanonicalArchiveError,
+                lambda: language.canonicalize_sdist(
+                    gzip_document(b"x" * (MAX_EXPANDED_BYTES + 1)),
+                    source_date_epoch=SOURCE_DATE_EPOCH,
+                ),
+            )
+            self.assertEqual(str(error), "release archive is invalid")
+            self.assertEqual(dispatches, [])
+
     def test_unexpected_internal_faults_remain_raw(self) -> None:
         language = require_canonical(self)
-        for exception in (TypeError("internal type"), RuntimeError("internal runtime")):
-            with self.subTest(exception=type(exception)), mock.patch.object(
-                language, "_decode_wheel", side_effect=exception
-            ):
-                with self.assertRaises(type(exception)) as raised:
-                    language.canonicalize_wheel(
-                        b"candidate", source_date_epoch=SOURCE_DATE_EPOCH
-                    )
-                self.assertIs(raised.exception, exception)
+        for function_name, decoder_name in (
+            ("canonicalize_wheel", "_decode_wheel"),
+            ("canonicalize_sdist", "_decode_sdist"),
+        ):
+            for exception in (TypeError("internal type"), RuntimeError("internal runtime")):
+                with self.subTest(
+                    function=function_name, exception=type(exception)
+                ), mock.patch.object(language, decoder_name, side_effect=exception):
+                    with self.assertRaises(type(exception)) as raised:
+                        getattr(language, function_name)(
+                            b"candidate", source_date_epoch=SOURCE_DATE_EPOCH
+                        )
+                    self.assertIs(raised.exception, exception)
 
 
 if __name__ == "__main__":
