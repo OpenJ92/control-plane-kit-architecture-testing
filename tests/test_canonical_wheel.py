@@ -6,13 +6,16 @@ import unittest
 import zipfile
 
 from canonical_archive_fixture import (
+    admitted_wheel_variants,
     MAX_COMPRESSED_BYTES,
     SOURCE_DATE_EPOCH,
     WHEEL_MEMBER_CONTENTS,
     WHEEL_RECORD_NAME,
     canonical_wheel_bytes,
+    invalid_wheel_variants,
     raw_wheel_bytes,
     require_canonical,
+    wheel_variant_bytes,
     wheel_payloads,
     wheel_record_is_consistent,
 )
@@ -20,6 +23,17 @@ from release_build_fixture import coherent_wheel_members
 
 
 class CanonicalWheelTests(unittest.TestCase):
+    def assert_invalid(self, language, encoded: bytes) -> None:
+        with self.assertRaises(language.CanonicalArchiveError) as raised:
+            language.canonicalize_wheel(
+                encoded, source_date_epoch=SOURCE_DATE_EPOCH
+            )
+        error = raised.exception
+        self.assertEqual(str(error), "release archive is invalid")
+        self.assertIsNone(error.__cause__)
+        self.assertIsNone(error.__context__)
+        self.assertNotIn("candidate", str(error))
+
     def test_raw_and_canonical_wheels_normalize_to_one_exact_document(self) -> None:
         language = require_canonical(self)
         raw = raw_wheel_bytes()
@@ -56,6 +70,24 @@ class CanonicalWheelTests(unittest.TestCase):
         self.assertNotIn(b"PK\x06\x06", encoded)
         self.assertNotIn(b"PK\x06\x07", encoded)
 
+    def test_raw_order_compression_mode_and_time_variants_share_one_golden(self) -> None:
+        language = require_canonical(self)
+        golden = canonical_wheel_bytes()
+        for name, candidate in admitted_wheel_variants():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    language.canonicalize_wheel(
+                        candidate, source_date_epoch=SOURCE_DATE_EPOCH
+                    ),
+                    golden,
+                )
+
+    def test_malformed_zip_rows_are_categorical(self) -> None:
+        language = require_canonical(self)
+        for name, candidate in invalid_wheel_variants():
+            with self.subTest(name=name):
+                self.assert_invalid(language, candidate)
+
     def test_wheel_payloads_and_record_are_preserved_exactly(self) -> None:
         language = require_canonical(self)
         raw = raw_wheel_bytes()
@@ -89,6 +121,24 @@ class CanonicalWheelTests(unittest.TestCase):
             dict(wheel_payloads(candidate))[WHEEL_RECORD_NAME],
             changed[WHEEL_RECORD_NAME],
         )
+
+    def test_epoch_changes_only_canonical_container_times(self) -> None:
+        language = require_canonical(self)
+        first = language.canonicalize_wheel(
+            wheel_variant_bytes(), source_date_epoch=SOURCE_DATE_EPOCH
+        )
+        second = language.canonicalize_wheel(
+            wheel_variant_bytes(), source_date_epoch=SOURCE_DATE_EPOCH + 2
+        )
+        self.assertNotEqual(first, second)
+        self.assertEqual(wheel_payloads(first), wheel_payloads(second))
+        with zipfile.ZipFile(io.BytesIO(first)) as first_archive, zipfile.ZipFile(
+            io.BytesIO(second)
+        ) as second_archive:
+            self.assertNotEqual(
+                tuple(info.date_time for info in first_archive.infolist()),
+                tuple(info.date_time for info in second_archive.infolist()),
+            )
 
 
 if __name__ == "__main__":

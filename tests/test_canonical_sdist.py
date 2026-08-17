@@ -5,6 +5,8 @@ import tarfile
 import unittest
 
 from canonical_archive_fixture import (
+    admitted_sdist_variants,
+    invalid_sdist_variants,
     MAX_COMPRESSED_BYTES,
     SDIST_MEMBER_CONTENTS,
     SDIST_PREFIX,
@@ -14,11 +16,23 @@ from canonical_archive_fixture import (
     canonical_sdist_bytes,
     raw_sdist_bytes,
     require_canonical,
+    sdist_variant_bytes,
     sdist_payloads,
 )
 
 
 class CanonicalSdistTests(unittest.TestCase):
+    def assert_invalid(self, language, encoded: bytes) -> None:
+        with self.assertRaises(language.CanonicalArchiveError) as raised:
+            language.canonicalize_sdist(
+                encoded, source_date_epoch=SOURCE_DATE_EPOCH
+            )
+        error = raised.exception
+        self.assertEqual(str(error), "release archive is invalid")
+        self.assertIsNone(error.__cause__)
+        self.assertIsNone(error.__context__)
+        self.assertNotIn("candidate", str(error))
+
     def test_raw_and_canonical_forms_normalize_to_one_exact_document(self) -> None:
         language = require_canonical(self)
         raw = raw_sdist_bytes()
@@ -65,6 +79,24 @@ class CanonicalSdistTests(unittest.TestCase):
                 self.assertEqual(str(raised.exception), "release archive is invalid")
                 self.assertNotIn("candidate", str(raised.exception))
 
+    def test_raw_metadata_and_setup_variants_normalize_to_one_golden(self) -> None:
+        language = require_canonical(self)
+        golden = canonical_sdist_bytes()
+        for name, candidate in admitted_sdist_variants():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    language.canonicalize_sdist(
+                        candidate, source_date_epoch=SOURCE_DATE_EPOCH
+                    ),
+                    golden,
+                )
+
+    def test_malformed_gzip_tar_and_setup_rows_are_categorical(self) -> None:
+        language = require_canonical(self)
+        for name, candidate in invalid_sdist_variants():
+            with self.subTest(name=name):
+                self.assert_invalid(language, candidate)
+
     def test_payload_changes_are_preserved_not_rewritten(self) -> None:
         language = require_canonical(self)
         accepted = dict(SDIST_MEMBER_CONTENTS)
@@ -99,6 +131,20 @@ class CanonicalSdistTests(unittest.TestCase):
                 member.name.split("/", 1)[1] for member in members if member.isfile()
             )
             self.assertEqual(file_names, tuple(SDIST_MEMBER_CONTENTS))
+
+    def test_epoch_changes_only_canonical_container_times(self) -> None:
+        language = require_canonical(self)
+        first = language.canonicalize_sdist(
+            sdist_variant_bytes(), source_date_epoch=SOURCE_DATE_EPOCH
+        )
+        second = language.canonicalize_sdist(
+            sdist_variant_bytes(), source_date_epoch=SOURCE_DATE_EPOCH + 2
+        )
+        self.assertNotEqual(first, second)
+        self.assertEqual(sdist_payloads(first), sdist_payloads(second))
+        for encoded, epoch in ((first, SOURCE_DATE_EPOCH), (second, SOURCE_DATE_EPOCH + 2)):
+            with tarfile.open(fileobj=io.BytesIO(encoded), mode="r:gz") as archive:
+                self.assertTrue(all(member.mtime == epoch for member in archive.getmembers()))
 
 
 if __name__ == "__main__":
