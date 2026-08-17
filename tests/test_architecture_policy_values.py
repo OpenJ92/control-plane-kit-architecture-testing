@@ -96,7 +96,6 @@ class ArchitecturePolicyValueTests(unittest.TestCase):
                             lambda candidate=candidate: exact_type(candidate),
                         )
                         self.assertEqual(str(error), "architecture policy identifier is invalid")
-                        self.assertNotIn("valid", str(error))
 
     def test_import_surface_and_policy_are_canonical_deep_nominal_values(self) -> None:
         policy = require_policy_language(self)
