@@ -30,6 +30,8 @@ _SDIST_NAME = "control_plane_kit_architecture_testing-0.1.0.tar.gz"
 _SDIST_PREFIX = "control_plane_kit_architecture_testing-0.1.0"
 _MAX_REPORT_BYTES = 65_536
 _MAX_INT64 = 9_223_372_036_854_775_807
+_MIN_ZIP_EPOCH = 315_532_800
+_MAX_ZIP_EPOCH = 4_354_819_199
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -286,7 +288,7 @@ def _valid_report(report: object) -> bool:
         or report.intended_tag != _TAG
         or report.version != _VERSION
         or type(source_date_epoch) is not int
-        or not 1 <= source_date_epoch <= _MAX_INT64
+        or not _MIN_ZIP_EPOCH <= source_date_epoch <= _MAX_ZIP_EPOCH
         or report.python_image != _PYTHON_IMAGE
         or not _plain_text(report.python_version, maximum=64)
         or not _plain_text(report.pip_version, maximum=64)
