@@ -398,6 +398,19 @@ def _project_calls(facts: PythonSourceFacts) -> tuple[CallTarget, ...]:
     return tuple(sorted((value.target for value in facts.calls), key=_call_surface_key))
 
 
+def _evaluate_admitted_policy(
+    facts: PythonSourceFacts,
+    policy: ArchitecturePolicy,
+) -> tuple[PolicyFinding, ...]:
+    if type(policy) is ExactImportSurfacePolicy:
+        matches = _project_imports(facts) == policy.expected_imports
+    else:
+        matches = _project_calls(facts) == policy.expected_calls
+    if matches:
+        return ()
+    return (_finding(policy),)
+
+
 def evaluate_policy(
     facts: PythonSourceFacts,
     policy: ArchitecturePolicy,
@@ -408,13 +421,7 @@ def evaluate_policy(
         _raise_evaluation_error()
     if (facts.path, facts.module) != (policy.path, policy.module):
         _raise_evaluation_error("architecture policy target does not match facts")
-    if type(policy) is ExactImportSurfacePolicy:
-        matches = _project_imports(facts) == policy.expected_imports
-    else:
-        matches = _project_calls(facts) == policy.expected_calls
-    if matches:
-        return ()
-    return (_finding(policy),)
+    return _evaluate_admitted_policy(facts, policy)
 
 
 def _batch_outer_valid(
@@ -554,5 +561,5 @@ def evaluate_policies(
         if target is None:
             findings.append(_finding(policy))
         else:
-            findings.extend(evaluate_policy(target, policy))
+            findings.extend(_evaluate_admitted_policy(target, policy))
     return tuple(sorted(findings, key=_finding_key))
