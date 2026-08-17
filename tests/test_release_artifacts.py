@@ -29,13 +29,9 @@ from release_build_fixture import (
 
 class ReleaseArtifactVerifierTests(unittest.TestCase):
     def write_nonregular_wheel(self, root: Path) -> Path:
-        wheel_members = dict(WHEEL_MEMBER_CONTENTS)
-        wheel_members["control_plane_kit_architecture_testing/py.typed"] = (
-            b"/tmp/external"
-        )
         return write_wheel(
             root,
-            members=wheel_members,
+            members=WHEEL_MEMBER_CONTENTS,
             member_modes={
                 "control_plane_kit_architecture_testing/py.typed": 0o120777
             },
@@ -155,6 +151,12 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
             with zipfile.ZipFile(wheel) as archive:
                 info = archive.getinfo(
                     "control_plane_kit_architecture_testing/py.typed"
+                )
+                self.assertEqual(
+                    archive.read(info),
+                    WHEEL_MEMBER_CONTENTS[
+                        "control_plane_kit_architecture_testing/py.typed"
+                    ],
                 )
                 self.assertEqual((info.external_attr >> 16) & 0o170000, 0o120000)
 
