@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from base64 import urlsafe_b64encode
+import csv
 from dataclasses import replace
+from hashlib import sha256
+import io
 from pathlib import Path
 import tarfile
 import tempfile
@@ -8,9 +12,13 @@ import unittest
 import zipfile
 
 from release_build_fixture import (
+    SDIST_GENERATED_MEMBERS,
     SDIST_MEMBER_CONTENTS,
+    SDIST_SOURCES_NAME,
     WHEEL_MEMBER_CONTENTS,
+    WHEEL_RECORD_NAME,
     captured_error,
+    closure_mutations,
     release_report,
     require_release,
     write_artifacts,
@@ -20,6 +28,60 @@ from release_build_fixture import (
 
 
 class ReleaseArtifactVerifierTests(unittest.TestCase):
+    def write_nonregular_wheel(self, root: Path) -> Path:
+        wheel_members = dict(WHEEL_MEMBER_CONTENTS)
+        wheel_members["control_plane_kit_architecture_testing/py.typed"] = (
+            b"/tmp/external"
+        )
+        return write_wheel(
+            root,
+            members=wheel_members,
+            member_modes={
+                "control_plane_kit_architecture_testing/py.typed": 0o120777
+            },
+        )
+
+    def write_nonregular_sdist(self, root: Path) -> Path:
+        sdist_members = dict(SDIST_MEMBER_CONTENTS)
+        sdist_members["README.md"] = b"../outside"
+        return write_sdist(
+            root,
+            members=sdist_members,
+            member_types={"README.md": tarfile.SYMTYPE},
+        )
+
+    def assert_wheel_record_is_consistent(self, path: Path) -> None:
+        with zipfile.ZipFile(path) as archive:
+            names = tuple(archive.namelist())
+            rows = tuple(
+                csv.reader(
+                    io.StringIO(archive.read(WHEEL_RECORD_NAME).decode("utf-8"))
+                )
+            )
+            self.assertEqual(tuple(row[0] for row in rows), names)
+            for name, digest, size in rows[:-1]:
+                content = archive.read(name)
+                expected_digest = urlsafe_b64encode(sha256(content).digest()).rstrip(b"=")
+                self.assertEqual(digest, f"sha256={expected_digest.decode('ascii')}")
+                self.assertEqual(size, str(len(content)))
+            self.assertEqual(rows[-1], [WHEEL_RECORD_NAME, "", ""])
+
+    def assert_sdist_sources_are_consistent(self, path: Path) -> None:
+        with tarfile.open(path, mode="r:gz") as archive:
+            members = tuple(member for member in archive.getmembers() if not member.isdir())
+            by_relative = {
+                member.name.split("/", 1)[1]: member for member in members
+            }
+            manifest = archive.extractfile(by_relative[SDIST_SOURCES_NAME])
+            self.assertIsNotNone(manifest)
+            listed = tuple(manifest.read().decode("utf-8").splitlines())
+            self.assertEqual(
+                listed,
+                tuple(
+                    name for name in by_relative if name not in SDIST_GENERATED_MEMBERS
+                ),
+            )
+
     def verify_fixture(self, release, root: Path) -> object:
         report = release_report(release, root)
         self.assertIsNone(release.verify_release_report(report, root))
@@ -65,6 +127,47 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
             self.assertNotIn("release-report.json", WHEEL_MEMBER_CONTENTS)
             self.assertNotIn("release-report.json", SDIST_MEMBER_CONTENTS)
 
+    def test_negative_closure_fixtures_have_coherent_internal_manifests(self) -> None:
+        for name, wheel_members, sdist_members in closure_mutations():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                wheel = write_wheel(root, members=wheel_members)
+                sdist = write_sdist(root, members=sdist_members)
+                self.assert_wheel_record_is_consistent(wheel)
+                self.assert_sdist_sources_are_consistent(sdist)
+
+    def test_symlink_fixtures_are_causal_and_internally_self_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            root = parent / "artifacts"
+            root.mkdir()
+            wheel, _sdist = write_artifacts(root)
+            outside = parent / "outside.whl"
+            wheel.rename(outside)
+            wheel.symlink_to(outside)
+            self.assertTrue(wheel.is_symlink())
+            self.assertEqual(outside.read_bytes(), wheel.read_bytes())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel = self.write_nonregular_wheel(root)
+            self.assert_wheel_record_is_consistent(wheel)
+            with zipfile.ZipFile(wheel) as archive:
+                info = archive.getinfo(
+                    "control_plane_kit_architecture_testing/py.typed"
+                )
+                self.assertEqual((info.external_attr >> 16) & 0o170000, 0o120000)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdist = self.write_nonregular_sdist(root)
+            self.assert_sdist_sources_are_consistent(sdist)
+            with tarfile.open(sdist, mode="r:gz") as archive:
+                member = archive.getmember(
+                    "control_plane_kit_architecture_testing-0.1.0/README.md"
+                )
+                self.assertTrue(member.issym())
+
     def test_synthetic_wheel_and_sdist_form_the_complete_accepted_closure(self) -> None:
         release = require_release(self)
         with tempfile.TemporaryDirectory() as directory:
@@ -75,39 +178,7 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
 
     def test_verifier_rejects_missing_extra_embedded_report_and_runtime_dependency(self) -> None:
         release = require_release(self)
-        mutations = []
-
-        missing_wheel = dict(WHEEL_MEMBER_CONTENTS)
-        missing_wheel.pop("control_plane_kit_architecture_testing/py.typed")
-        mutations.append(("wheel missing", missing_wheel, SDIST_MEMBER_CONTENTS))
-
-        extra_wheel = dict(WHEEL_MEMBER_CONTENTS)
-        extra_wheel["tests/leak.py"] = b""
-        mutations.append(("wheel extra", extra_wheel, SDIST_MEMBER_CONTENTS))
-
-        dependency_wheel = dict(WHEEL_MEMBER_CONTENTS)
-        dependency_wheel[
-            "control_plane_kit_architecture_testing-0.1.0.dist-info/METADATA"
-        ] += b"Requires-Dist: candidate-secret\n"
-        mutations.append(("runtime dependency", dependency_wheel, SDIST_MEMBER_CONTENTS))
-
-        report_wheel = dict(WHEEL_MEMBER_CONTENTS)
-        report_wheel["release-report.json"] = b"{}\n"
-        mutations.append(("embedded report", report_wheel, SDIST_MEMBER_CONTENTS))
-
-        report_sdist = dict(SDIST_MEMBER_CONTENTS)
-        report_sdist["release-report.json"] = b"{}\n"
-        mutations.append(("sdist embedded report", WHEEL_MEMBER_CONTENTS, report_sdist))
-
-        missing_sdist = dict(SDIST_MEMBER_CONTENTS)
-        missing_sdist.pop("tests/policy_fixture.py")
-        mutations.append(("sdist missing fixture", WHEEL_MEMBER_CONTENTS, missing_sdist))
-
-        extra_sdist = dict(SDIST_MEMBER_CONTENTS)
-        extra_sdist[".git/config"] = b"candidate-secret"
-        mutations.append(("sdist git state", WHEEL_MEMBER_CONTENTS, extra_sdist))
-
-        for name, wheel_members, sdist_members in mutations:
+        for name, wheel_members, sdist_members in closure_mutations():
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 write_wheel(root, members=wheel_members)
@@ -121,11 +192,71 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
                 )
                 self.assertEqual(str(error), "release artifact set is invalid")
                 self.assertNotIn("candidate", str(error))
-                self.assertEqual(set(root.iterdir()), {root / value.filename for value in report.artifacts})
+                self.assertEqual(
+                    set(root.iterdir()),
+                    {root / value.filename for value in report.artifacts},
+                )
                 self.assertEqual(
                     {path.name: path.read_bytes() for path in root.iterdir()},
                     snapshot,
                 )
+
+    def test_verifier_rejects_root_and_archive_member_symlinks(self) -> None:
+        release = require_release(self)
+
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            root = parent / "artifacts"
+            root.mkdir()
+            wheel, _sdist = write_artifacts(root)
+            report = release_report(release, root)
+            outside = parent / "outside.whl"
+            wheel.rename(outside)
+            wheel.symlink_to(outside)
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(report, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
+            self.assertTrue(wheel.is_symlink())
+            self.assertEqual(outside.read_bytes(), wheel.read_bytes())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel = self.write_nonregular_wheel(root)
+            write_sdist(root)
+            self.assert_wheel_record_is_consistent(wheel)
+            with zipfile.ZipFile(wheel) as archive:
+                info = archive.getinfo(
+                    "control_plane_kit_architecture_testing/py.typed"
+                )
+                self.assertEqual((info.external_attr >> 16) & 0o170000, 0o120000)
+            report = release_report(release, root)
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(report, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_wheel(root)
+            sdist = self.write_nonregular_sdist(root)
+            self.assert_sdist_sources_are_consistent(sdist)
+            with tarfile.open(sdist, mode="r:gz") as archive:
+                member = archive.getmember(
+                    "control_plane_kit_architecture_testing-0.1.0/README.md"
+                )
+                self.assertTrue(member.issym())
+            report = release_report(release, root)
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(report, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
 
     def test_verifier_rejects_identity_hash_size_and_unsafe_member_modes(self) -> None:
         release = require_release(self)

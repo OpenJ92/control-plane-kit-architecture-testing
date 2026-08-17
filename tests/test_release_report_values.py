@@ -139,6 +139,17 @@ class ReleaseReportValueTests(unittest.TestCase):
         self.assertEqual(report.version, "0.1.0")
         self.assertEqual(report.source_date_epoch, 1_800_000_000)
 
+        alternate_input = release.BuildInputArtifact(
+            "build",
+            "1.3.1",
+            "build-1.3.1-py3-none-any.whl",
+            "https://files.pythonhosted.org/packages/alternate/build-1.3.1-py3-none-any.whl",
+            23_383,
+            "c" * 64,
+        )
+        drifted_inputs = (alternate_input, *report.build_inputs[1:])
+        foreign_output = release.OutputArtifact("foreign-0.1.0.tar.gz", 1, "d" * 64)
+
         invalid = (
             {"schema": "other"},
             {"repository": "Other/repository"},
@@ -153,8 +164,11 @@ class ReleaseReportValueTests(unittest.TestCase):
             {"build_inputs": HostileTuple(report.build_inputs)},
             {"build_inputs": tuple(reversed(report.build_inputs))},
             {"build_inputs": report.build_inputs + (report.build_inputs[0],)},
+            {"build_inputs": drifted_inputs},
             {"artifacts": tuple(reversed(report.artifacts))},
             {"artifacts": report.artifacts + (report.artifacts[0],)},
+            {"artifacts": report.artifacts[:1]},
+            {"artifacts": (report.artifacts[0], foreign_output)},
         )
         for changes in invalid:
             with self.subTest(changes=tuple(changes)):
@@ -162,7 +176,7 @@ class ReleaseReportValueTests(unittest.TestCase):
                 values.update(changes)
                 error = captured_error(
                     self,
-                    (TypeError, ValueError),
+                    release.ReleaseBuildReportError,
                     lambda values=values: release.ReleaseBuildReport(**values),
                 )
                 self.assertEqual(str(error), "release build report is invalid")

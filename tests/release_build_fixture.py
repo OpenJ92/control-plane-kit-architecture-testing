@@ -103,12 +103,17 @@ def _wheel_record(members: dict[str, bytes]) -> bytes:
     return "".join(rows).encode("utf-8")
 
 
-WHEEL_MEMBER_CONTENTS = {
-    **_WHEEL_MEMBERS_WITHOUT_RECORD,
-    f"{PACKAGE_NAME}-{VERSION}.dist-info/RECORD": _wheel_record(
-        _WHEEL_MEMBERS_WITHOUT_RECORD
-    ),
-}
+WHEEL_RECORD_NAME = f"{PACKAGE_NAME}-{VERSION}.dist-info/RECORD"
+
+
+def coherent_wheel_members(members: dict[str, bytes]) -> dict[str, bytes]:
+    without_record = {
+        name: content for name, content in members.items() if name != WHEEL_RECORD_NAME
+    }
+    return {**without_record, WHEEL_RECORD_NAME: _wheel_record(without_record)}
+
+
+WHEEL_MEMBER_CONTENTS = coherent_wheel_members(_WHEEL_MEMBERS_WITHOUT_RECORD)
 
 SDIST_SOURCE_MEMBERS = (
     "AGENTS.md",
@@ -149,6 +154,18 @@ SDIST_GENERATED_MEMBERS = (
     "src/control_plane_kit_architecture_testing.egg-info/dependency_links.txt",
     "src/control_plane_kit_architecture_testing.egg-info/top_level.txt",
 )
+SDIST_SOURCES_NAME = "src/control_plane_kit_architecture_testing.egg-info/SOURCES.txt"
+
+
+def coherent_sdist_members(members: dict[str, bytes]) -> dict[str, bytes]:
+    selected = dict(members)
+    selected[SDIST_SOURCES_NAME] = (
+        "\n".join(
+            name for name in selected if name not in SDIST_GENERATED_MEMBERS
+        ).encode("utf-8")
+        + b"\n"
+    )
+    return selected
 
 SDIST_MEMBER_CONTENTS = {
     **{name: f"fixture:{name}\n".encode("utf-8") for name in SDIST_SOURCE_MEMBERS},
@@ -179,15 +196,51 @@ SDIST_MEMBER_CONTENTS.update(
                 f"{PACKAGE_NAME}-{VERSION}.dist-info/METADATA"
             ]
         ),
-        "src/control_plane_kit_architecture_testing.egg-info/SOURCES.txt": (
-            "\n".join(SDIST_SOURCE_MEMBERS).encode("utf-8") + b"\n"
-        ),
+        SDIST_SOURCES_NAME: b"",
         "src/control_plane_kit_architecture_testing.egg-info/dependency_links.txt": b"\n",
         "src/control_plane_kit_architecture_testing.egg-info/top_level.txt": (
             b"control_plane_kit_architecture_testing\n"
         ),
     }
 )
+SDIST_MEMBER_CONTENTS = coherent_sdist_members(SDIST_MEMBER_CONTENTS)
+
+
+def closure_mutations() -> tuple[
+    tuple[str, dict[str, bytes], dict[str, bytes]], ...
+]:
+    missing_wheel = dict(WHEEL_MEMBER_CONTENTS)
+    missing_wheel.pop(f"{PACKAGE_NAME}/py.typed")
+
+    extra_wheel = dict(WHEEL_MEMBER_CONTENTS)
+    extra_wheel["tests/leak.py"] = b""
+
+    dependency_wheel = dict(WHEEL_MEMBER_CONTENTS)
+    dependency_wheel[f"{PACKAGE_NAME}-{VERSION}.dist-info/METADATA"] += (
+        b"Requires-Dist: candidate-secret\n"
+    )
+
+    report_wheel = dict(WHEEL_MEMBER_CONTENTS)
+    report_wheel["release-report.json"] = b"{}\n"
+
+    report_sdist = dict(SDIST_MEMBER_CONTENTS)
+    report_sdist["release-report.json"] = b"{}\n"
+
+    missing_sdist = dict(SDIST_MEMBER_CONTENTS)
+    missing_sdist.pop("tests/policy_fixture.py")
+
+    extra_sdist = dict(SDIST_MEMBER_CONTENTS)
+    extra_sdist[".git/config"] = b"candidate-secret"
+
+    return (
+        ("wheel missing", missing_wheel, SDIST_MEMBER_CONTENTS),
+        ("wheel extra", extra_wheel, SDIST_MEMBER_CONTENTS),
+        ("runtime dependency", dependency_wheel, SDIST_MEMBER_CONTENTS),
+        ("embedded report", report_wheel, SDIST_MEMBER_CONTENTS),
+        ("sdist embedded report", WHEEL_MEMBER_CONTENTS, report_sdist),
+        ("sdist missing fixture", WHEEL_MEMBER_CONTENTS, missing_sdist),
+        ("sdist git state", WHEEL_MEMBER_CONTENTS, extra_sdist),
+    )
 
 
 def load_release_language() -> ModuleType | None:
@@ -290,14 +343,20 @@ def write_wheel(
     *,
     members: dict[str, bytes] | None = None,
     mode: int = 0o644,
+    member_modes: dict[str, int] | None = None,
 ) -> Path:
     path = root / WHEEL_NAME
-    selected = WHEEL_MEMBER_CONTENTS if members is None else members
+    selected = coherent_wheel_members(
+        WHEEL_MEMBER_CONTENTS if members is None else members
+    )
+    selected_modes = {} if member_modes is None else member_modes
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name, content in selected.items():
             info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
             info.create_system = 3
-            info.external_attr = (stat_mode(mode) & 0xFFFF) << 16
+            info.external_attr = (
+                selected_modes.get(name, stat_mode(mode)) & 0xFFFF
+            ) << 16
             archive.writestr(info, content)
     return path
 
@@ -307,9 +366,13 @@ def write_sdist(
     *,
     members: dict[str, bytes] | None = None,
     mode: int | None = None,
+    member_types: dict[str, bytes] | None = None,
 ) -> Path:
     path = root / SDIST_NAME
-    selected = SDIST_MEMBER_CONTENTS if members is None else members
+    selected = coherent_sdist_members(
+        SDIST_MEMBER_CONTENTS if members is None else members
+    )
+    selected_types = {} if member_types is None else member_types
     with path.open("wb") as destination:
         with tarfile.open(fileobj=destination, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
             directory = tarfile.TarInfo(SDIST_PREFIX)
@@ -319,14 +382,20 @@ def write_sdist(
             archive.addfile(directory)
             for name, content in selected.items():
                 info = tarfile.TarInfo(f"{SDIST_PREFIX}/{name}")
-                info.size = len(content)
                 info.mode = (
                     mode
                     if mode is not None
                     else (0o755 if name == "test.sh" else 0o644)
                 )
                 info.mtime = 1_800_000_000
-                archive.addfile(info, io.BytesIO(content))
+                info.type = selected_types.get(name, tarfile.REGTYPE)
+                if info.type == tarfile.REGTYPE:
+                    info.size = len(content)
+                    archive.addfile(info, io.BytesIO(content))
+                else:
+                    info.size = 0
+                    info.linkname = content.decode("utf-8")
+                    archive.addfile(info)
     return path
 
 
