@@ -8,18 +8,26 @@ interpreters, providers, and OCI images must not depend on or contain it.
 Consumers install an exact reviewed source coordinate for test execution and
 own their concrete architecture decisions.
 
-## Genesis Surface
+## Python source facts
 
-Version `0.1.0` establishes only one importable package namespace:
+The immutable source-fact language describes imports, aliases, and lexical call
+targets without reading files or executing inspected code. `analyze_source`
+interprets caller-supplied Python text using the executing Python version's
+standard-library AST grammar.
 
-```python
-from control_plane_kit_architecture_testing import __version__
+## Architecture policies
 
-assert __version__ == "0.1.0"
-```
+Closed import-surface and call-surface policies compare admitted source facts
+with exact expected multisets. Evaluation is deterministic, bounded, and pure;
+consumers own their repository-specific allowlists.
 
-The root export is deliberately limited to `__version__`. Follow-up issues add
-the first immutable language and interpretation boundaries tests-before-source.
+## Reproducible release candidates
+
+Repository-only support defines the exact build-input lock, immutable release
+report, canonical report codec, and complete wheel/source-distribution verifier
+for version `0.1.0`. These values verify already-produced candidate bytes. The
+later build stage owns acquisition and isolated construction, and the candidate
+is not published by this stage.
 
 ## Install
 
@@ -48,7 +56,8 @@ Python base images may remain in Docker's ordinary local cache.
 
 ## Security
 
-The genesis package performs no source inspection, filesystem scanning,
-environment access, plugin discovery, logging, subprocess, network, mutation,
-rewrite, or autofix. Docker and package construction exist only in the
-repository test gate.
+The installed package performs no filesystem scanning, environment access,
+plugin discovery, logging, process execution, network access, mutation,
+rewrite, or autofix. Caller-supplied source text and admitted facts remain
+bounded values. Repository-only artifact verification reads only the explicitly
+selected candidate directory and never publishes or repairs its contents.

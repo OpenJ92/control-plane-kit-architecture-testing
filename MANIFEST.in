@@ -1,0 +1,11 @@
+include AGENTS.md
+include GIT-FLOW.md
+include LICENSE
+include MANIFEST.in
+include README.md
+include pyproject.toml
+include test.sh
+recursive-include src *.py py.typed
+recursive-include test_support *.json *.py
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod]

@@ -3,7 +3,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_FRONTEND="build==1.3.0"
-BUILD_BACKEND="setuptools==80.9.0"
+BUILD_BACKEND="setuptools==83.0.0"
+BUILD_INPUT_LOCK="$ROOT/test_support/build-inputs.json"
+RELEASE_REPORT_SUPPORT="$ROOT/test_support/release_report.py"
+OFFLINE_BUILD_INSTALL_FLAGS=(
+  --no-index
+  --find-links
+  /tmp/build-wheelhouse
+  --require-hashes
+  --only-binary=:all:
+  --no-deps
+)
+
+test -f "$BUILD_INPUT_LOCK"
+test -f "$RELEASE_REPORT_SUPPORT"
+echo "phase=reproducible-build contract=declared"
 
 PYTHON_IMAGES=(
   "python:3.11-slim@sha256:a630a63cdb314e2d138a2fca3e375e319e8568346ffafac5b980f888630ac4f1"
