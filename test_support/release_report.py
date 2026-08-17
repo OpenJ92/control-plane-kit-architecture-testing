@@ -3,13 +3,17 @@ from __future__ import annotations
 from base64 import urlsafe_b64encode
 import csv
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email import policy
+from email.parser import BytesParser
 from hashlib import sha256
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import tarfile
+import tomllib
 import zipfile
 
 
@@ -125,15 +129,18 @@ _SDIST_GENERATED_MEMBERS = (
     "src/control_plane_kit_architecture_testing.egg-info/top_level.txt",
 )
 _SDIST_MEMBERS = _SDIST_SOURCE_MEMBERS + _SDIST_GENERATED_MEMBERS
+_SDIST_DIRECTORY_MEMBERS = tuple(
+    sorted(
+        {
+            parent.as_posix()
+            for name in _SDIST_MEMBERS
+            for parent in PurePosixPath(name).parents
+            if parent.as_posix() != "."
+        }
+    )
+)
 _SDIST_SOURCES = "src/control_plane_kit_architecture_testing.egg-info/SOURCES.txt"
 
-_METADATA = (
-    b"Metadata-Version: 2.4\n"
-    b"Name: control-plane-kit-architecture-testing\n"
-    b"Version: 0.1.0\n"
-    b"Requires-Python: >=3.11\n"
-    b"\n"
-)
 _WHEEL = (
     b"Wheel-Version: 1.0\n"
     b"Generator: setuptools (83.0.0)\n"
@@ -141,16 +148,44 @@ _WHEEL = (
     b"Tag: py3-none-any\n"
     b"\n"
 )
-_SDIST_PROJECT = (
-    b"[build-system]\n"
-    b'requires = ["setuptools==83.0.0"]\n'
-    b'build-backend = "setuptools.build_meta"\n\n'
-    b"[project]\n"
-    b'name = "control-plane-kit-architecture-testing"\n'
-    b'version = "0.1.0"\n'
-    b'requires-python = ">=3.11"\n'
-    b"dependencies = []\n"
-)
+_PROJECT_DOCUMENT = {
+    "build-system": {
+        "requires": ["setuptools==83.0.0"],
+        "build-backend": "setuptools.build_meta",
+    },
+    "project": {
+        "name": "control-plane-kit-architecture-testing",
+        "version": "0.1.0",
+        "description": (
+            "Immutable architecture testing language for Control Plane Kit repositories"
+        ),
+        "readme": "README.md",
+        "requires-python": ">=3.11",
+        "license": "MIT",
+        "license-files": ["LICENSE"],
+        "authors": [{"name": "OpenJ92"}],
+        "dependencies": [],
+        "urls": {
+            "Repository": (
+                "https://github.com/OpenJ92/"
+                "control-plane-kit-architecture-testing"
+            )
+        },
+    },
+    "tool": {
+        "setuptools": {
+            "packages": {
+                "find": {
+                    "where": ["src"],
+                    "include": ["control_plane_kit_architecture_testing*"],
+                }
+            },
+            "package-data": {
+                "control_plane_kit_architecture_testing": ["py.typed"]
+            },
+        }
+    },
+}
 
 
 class ReleaseBuildReportError(ValueError):
@@ -448,58 +483,96 @@ def _require(condition: bool) -> None:
         raise _ArtifactInvalid
 
 
-def _read_zip_member(archive: zipfile.ZipFile, name: str) -> bytes:
+def _zip_datetime(source_date_epoch: int) -> tuple[int, int, int, int, int, int]:
+    instant = datetime.fromtimestamp(source_date_epoch, timezone.utc)
+    return (
+        instant.year,
+        instant.month,
+        instant.day,
+        instant.hour,
+        instant.minute,
+        instant.second - instant.second % 2,
+    )
+
+
+def _read_zip_member(
+    archive: zipfile.ZipFile,
+    name: str,
+    expected_datetime: tuple[int, int, int, int, int, int],
+) -> bytes:
     info = archive.getinfo(name)
     mode = info.external_attr >> 16
     _require(stat.S_ISREG(mode) and stat.S_IMODE(mode) == 0o644)
-    _require(info.date_time == (2026, 1, 1, 0, 0, 0))
+    _require(info.date_time == expected_datetime)
     return archive.read(info)
 
 
-def _verify_wheel(path: Path) -> None:
+def _verify_wheel(path: Path, source_date_epoch: int) -> bytes:
+    expected_datetime = _zip_datetime(source_date_epoch)
     with zipfile.ZipFile(path) as archive:
         names = tuple(archive.namelist())
         _require(names == _WHEEL_MEMBERS)
-        contents = {name: _read_zip_member(archive, name) for name in names}
+        contents = {
+            name: _read_zip_member(archive, name, expected_datetime)
+            for name in names
+        }
     _require(contents["control_plane_kit_architecture_testing/py.typed"] == b"")
-    _require(contents[_WHEEL_METADATA] == _METADATA)
-    _require(contents[_WHEEL_DESCRIPTOR] == _WHEEL)
     rows = tuple(csv.reader(io.StringIO(contents[_WHEEL_RECORD].decode("utf-8"))))
     _require(len(rows) == len(names))
+    _require(all(type(row) is list and len(row) == 3 for row in rows))
     _require(tuple(row[0] for row in rows) == names)
     for name, digest, size in rows[:-1]:
         content = contents[name]
         encoded = urlsafe_b64encode(sha256(content).digest()).rstrip(b"=").decode("ascii")
         _require(digest == "sha256=" + encoded and size == str(len(content)))
     _require(rows[-1] == [_WHEEL_RECORD, "", ""])
+    _require(contents[_WHEEL_DESCRIPTOR] == _WHEEL)
+    return contents[_WHEEL_METADATA]
 
 
-def _verify_sdist(path: Path) -> None:
+def _verify_sdist(path: Path, source_date_epoch: int) -> dict[str, bytes]:
     with tarfile.open(path, mode="r:gz") as archive:
         members = archive.getmembers()
-        _require(len(members) == len(_SDIST_MEMBERS) + 1)
+        _require(
+            len(members)
+            == len(_SDIST_MEMBERS) + len(_SDIST_DIRECTORY_MEMBERS) + 1
+        )
         root = members[0]
         _require(
             root.name == _SDIST_PREFIX
             and root.isdir()
             and root.mode == 0o755
-            and root.mtime == 1_800_000_000
+            and root.mtime == source_date_epoch
         )
-        files = members[1:]
-        relative_names = tuple(member.name.split("/", 1)[1] for member in files)
+        nested = members[1:]
+        _require(
+            all(member.name.startswith(_SDIST_PREFIX + "/") for member in nested)
+        )
+        directories = tuple(member for member in nested if member.isdir())
+        files = tuple(member for member in nested if member.isfile())
+        _require(len(directories) + len(files) == len(nested))
+        directory_names = tuple(
+            member.name.removeprefix(_SDIST_PREFIX + "/")
+            for member in directories
+        )
+        _require(
+            len(set(directory_names)) == len(directory_names)
+            and set(directory_names) == set(_SDIST_DIRECTORY_MEMBERS)
+        )
+        for member in directories:
+            _require(member.mode == 0o755 and member.mtime == source_date_epoch)
+        relative_names = tuple(
+            member.name.removeprefix(_SDIST_PREFIX + "/") for member in files
+        )
         _require(relative_names == _SDIST_MEMBERS)
         contents: dict[str, bytes] = {}
         for relative, member in zip(relative_names, files, strict=True):
             _require(member.name == _SDIST_PREFIX + "/" + relative)
-            _require(member.isfile())
             _require(member.mode == (0o755 if relative == "test.sh" else 0o644))
-            _require(member.mtime == 1_800_000_000)
+            _require(member.mtime == source_date_epoch)
             extracted = archive.extractfile(member)
             _require(extracted is not None)
             contents[relative] = extracted.read()
-    _require(contents["PKG-INFO"] == _METADATA)
-    _require(contents["src/control_plane_kit_architecture_testing.egg-info/PKG-INFO"] == _METADATA)
-    _require(contents["pyproject.toml"] == _SDIST_PROJECT)
     _require(contents["src/control_plane_kit_architecture_testing.egg-info/dependency_links.txt"] == b"\n")
     _require(
         contents["src/control_plane_kit_architecture_testing.egg-info/top_level.txt"]
@@ -509,6 +582,50 @@ def _verify_sdist(path: Path) -> None:
         contents[_SDIST_SOURCES]
         == ("\n".join(_SDIST_SOURCE_MEMBERS) + "\n").encode("utf-8")
     )
+    return contents
+
+
+def _metadata_values(message: object, name: str) -> tuple[str, ...]:
+    values = message.get_all(name)
+    return () if values is None else tuple(str(value) for value in values)
+
+
+def _verify_project_metadata(
+    wheel_metadata: bytes,
+    sdist_contents: dict[str, bytes],
+) -> None:
+    package_metadata = sdist_contents["PKG-INFO"]
+    egg_metadata = sdist_contents[
+        "src/control_plane_kit_architecture_testing.egg-info/PKG-INFO"
+    ]
+    _require(wheel_metadata == package_metadata == egg_metadata)
+    project_document = tomllib.loads(
+        sdist_contents["pyproject.toml"].decode("utf-8")
+    )
+    _require(project_document == _PROJECT_DOCUMENT)
+    message = BytesParser(policy=policy.default).parsebytes(wheel_metadata)
+    _require(not message.defects)
+    project = _PROJECT_DOCUMENT["project"]
+    expected = {
+        "Metadata-Version": ("2.4",),
+        "Name": (project["name"],),
+        "Version": (project["version"],),
+        "Summary": (project["description"],),
+        "Author": (project["authors"][0]["name"],),
+        "License-Expression": (project["license"],),
+        "Project-URL": (f"Repository, {project['urls']['Repository']}",),
+        "Requires-Python": (project["requires-python"],),
+        "Description-Content-Type": ("text/markdown",),
+        "License-File": (project["license-files"][0],),
+    }
+    _require(
+        all(_metadata_values(message, name) == values for name, values in expected.items())
+    )
+    _require(_metadata_values(message, "Requires-Dist") == ())
+    _require(_metadata_values(message, "Provides-Extra") == ())
+    payload = message.get_payload()
+    _require(type(payload) is str)
+    _require(payload.encode("utf-8") == sdist_contents["README.md"])
 
 
 def _verify_artifacts(report: ReleaseBuildReport, artifact_root: Path) -> None:
@@ -520,8 +637,15 @@ def _verify_artifacts(report: ReleaseBuildReport, artifact_root: Path) -> None:
         content = path.read_bytes()
         _require(len(content) == expected.size)
         _require(sha256(content).hexdigest() == expected.sha256)
-    _verify_wheel(artifact_root / _WHEEL_NAME)
-    _verify_sdist(artifact_root / _SDIST_NAME)
+    wheel_metadata = _verify_wheel(
+        artifact_root / _WHEEL_NAME,
+        report.source_date_epoch,
+    )
+    sdist_contents = _verify_sdist(
+        artifact_root / _SDIST_NAME,
+        report.source_date_epoch,
+    )
+    _verify_project_metadata(wheel_metadata, sdist_contents)
 
 
 def verify_release_report(report: ReleaseBuildReport, artifact_root: Path) -> None:
@@ -535,7 +659,9 @@ def verify_release_report(report: ReleaseBuildReport, artifact_root: Path) -> No
             IndexError,
             KeyError,
             OSError,
+            OverflowError,
             tarfile.TarError,
+            tomllib.TOMLDecodeError,
             UnicodeError,
             zipfile.BadZipFile,
         ):
