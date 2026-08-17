@@ -73,6 +73,10 @@ class ArchitecturePolicyValueTests(unittest.TestCase):
             with self.subTest(exact_type=exact_type.__name__):
                 self.assertEqual(exact_type("a").value, "a")
                 self.assertEqual(exact_type("a" * 200).value, "a" * 200)
+                self.assertEqual(
+                    exact_type("a0.b1_c2-d3").value,
+                    "a0.b1_c2-d3",
+                )
                 for candidate in (
                     "",
                     "a" * 201,
@@ -101,6 +105,11 @@ class ArchitecturePolicyValueTests(unittest.TestCase):
         location_free = policy.ImportSurfaceEntry("alpha", None, None)
         aliased = policy.ImportSurfaceEntry("alpha", None, "selected")
         imported = policy.ImportSurfaceEntry("beta", "run", None)
+        maximum_entry = policy.ImportSurfaceEntry(
+            "m" * 512,
+            "i" * 512,
+            "a" * 512,
+        )
         expected = (location_free, aliased, imported, imported)
         value = policy.ExactImportSurfacePolicy(
             policy_id,
@@ -111,6 +120,14 @@ class ArchitecturePolicyValueTests(unittest.TestCase):
             "import surface differs",
         )
         self.assertEqual(value.expected_imports, expected)
+        self.assertEqual(
+            (
+                len(maximum_entry.module),
+                len(maximum_entry.imported_name),
+                len(maximum_entry.alias_name),
+            ),
+            (512, 512, 512),
+        )
 
         for module, imported_name, alias_name in (
             ("", None, None),
@@ -229,6 +246,22 @@ class ArchitecturePolicyValueTests(unittest.TestCase):
         self.assertNotIn("source", finding.__dict__ if hasattr(finding, "__dict__") else ())
 
         facts = empty_facts(self)
+        maximum_policy = policy.ExactImportSurfacePolicy(
+            policy_id,
+            rule_id,
+            "p" * 512,
+            "m" * 512,
+            (),
+            "x" * 512,
+        )
+        self.assertEqual(
+            (
+                len(maximum_policy.path),
+                len(maximum_policy.module),
+                len(maximum_policy.message),
+            ),
+            (512, 512, 512),
+        )
         for path, module, message in (
             ("", facts.module, "message"),
             ("p" * 513, facts.module, "message"),
@@ -288,6 +321,76 @@ class ArchitecturePolicyValueTests(unittest.TestCase):
             ),
         )
         self.assertEqual(str(error), "architecture policy value is invalid")
+
+        class HostilePolicyId(policy.PolicyId):
+            pass
+
+        class HostileRuleId(policy.RuleId):
+            pass
+
+        class HostileImportPolicy(policy.ExactImportSurfacePolicy):
+            pass
+
+        class HostileCallPolicy(policy.ExactCallSurfacePolicy):
+            pass
+
+        class HostileFinding(policy.PolicyFinding):
+            pass
+
+        hostile_constructors = (
+            (
+                HostilePolicyId,
+                ("package-surface",),
+                "architecture policy identifier is invalid",
+            ),
+            (
+                HostileRuleId,
+                ("exact-surface",),
+                "architecture policy identifier is invalid",
+            ),
+            (
+                HostileImportPolicy,
+                (
+                    policy_id,
+                    rule_id,
+                    facts.path,
+                    facts.module,
+                    (),
+                    "message",
+                ),
+                "architecture policy value is invalid",
+            ),
+            (
+                HostileCallPolicy,
+                (
+                    policy_id,
+                    rule_id,
+                    facts.path,
+                    facts.module,
+                    (),
+                    "message",
+                ),
+                "architecture policy value is invalid",
+            ),
+            (
+                HostileFinding,
+                (
+                    policy_id,
+                    rule_id,
+                    language.SourceLocation(facts.path, 1, 0),
+                    "message",
+                ),
+                "architecture policy value is invalid",
+            ),
+        )
+        for constructor, arguments, expected_message in hostile_constructors:
+            with self.subTest(constructor=constructor.__name__):
+                error = captured_error(
+                    self,
+                    TypeError,
+                    lambda constructor=constructor, arguments=arguments: constructor(*arguments),
+                )
+                self.assertEqual(str(error), expected_message)
 
 
 if __name__ == "__main__":

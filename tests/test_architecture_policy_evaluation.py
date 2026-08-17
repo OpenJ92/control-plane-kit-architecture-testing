@@ -20,6 +20,7 @@ from policy_fixture import (
 
 class ArchitecturePolicyEvaluationTests(unittest.TestCase):
     def test_import_surface_equality_and_duplicate_preserving_mismatch_are_exact(self) -> None:
+        language = require_language(self)
         policy = require_policy_language(self)
         facts = import_facts(self)
         exact = import_policy(self, facts)
@@ -35,10 +36,17 @@ class ArchitecturePolicyEvaluationTests(unittest.TestCase):
             exact.message,
         )
         findings = policy.evaluate_policy(facts, mismatch)
-        self.assertEqual(len(findings), 1)
-        self.assertIs(type(findings[0]), policy.PolicyFinding)
-        self.assertEqual(findings[0].message, exact.message)
-        self.assertEqual((findings[0].location.line, findings[0].location.column), (1, 0))
+        self.assertEqual(
+            findings,
+            (
+                policy.PolicyFinding(
+                    exact.policy_id,
+                    exact.rule_id,
+                    language.SourceLocation(exact.path, 1, 0),
+                    exact.message,
+                ),
+            ),
+        )
 
     def test_call_surface_equality_and_resolved_unresolved_mismatch_are_exact(self) -> None:
         language = require_language(self)
@@ -69,7 +77,17 @@ class ArchitecturePolicyEvaluationTests(unittest.TestCase):
             replacement,
             exact.message,
         )
-        self.assertEqual(len(policy.evaluate_policy(facts, mismatch)), 1)
+        self.assertEqual(
+            policy.evaluate_policy(facts, mismatch),
+            (
+                policy.PolicyFinding(
+                    exact.policy_id,
+                    exact.rule_id,
+                    language.SourceLocation(exact.path, 1, 0),
+                    exact.message,
+                ),
+            ),
+        )
 
     def test_single_policy_requires_the_exact_named_target(self) -> None:
         policy = require_policy_language(self)
@@ -118,18 +136,21 @@ class ArchitecturePolicyEvaluationTests(unittest.TestCase):
             (),
             "call surface differs",
         )
-        canary = RuntimeError("finding constructor dispatched")
-        with mock.patch.object(policy.PolicyFinding, "__post_init__", side_effect=canary):
+        canary = RuntimeError("policy dispatch called before duplicate preflight")
+        with mock.patch.object(policy, "evaluate_policy", side_effect=canary) as dispatch:
             fact_error = captured_error(
                 self,
                 policy.PolicyEvaluationError,
                 lambda: policy.evaluate_policies((facts, duplicate), (first,)),
             )
+            dispatch.assert_not_called()
+        with mock.patch.object(policy, "evaluate_policy", side_effect=canary) as dispatch:
             policy_error = captured_error(
                 self,
                 policy.PolicyEvaluationError,
                 lambda: policy.evaluate_policies((facts,), (first, second)),
             )
+            dispatch.assert_not_called()
         self.assertEqual(
             str(fact_error),
             "architecture facts contain duplicate target coordinates",
@@ -161,6 +182,46 @@ class ArchitecturePolicyEvaluationTests(unittest.TestCase):
         self.assertEqual(tuple(value.location.path for value in findings), ("a.py", "z.py"))
         self.assertNotEqual(findings[0].policy_id, findings[1].policy_id)
         self.assertEqual((alpha.imports, beta.imports), ((), ()))
+
+        tie_facts = empty_facts(self, path="tie.py", module="tie")
+        later = policy.ExactImportSurfacePolicy(
+            policy.PolicyId("z-policy"),
+            policy.RuleId("z-rule"),
+            tie_facts.path,
+            tie_facts.module,
+            (policy.ImportSurfaceEntry("missing", None, None),),
+            "z-message",
+        )
+        earlier = policy.ExactCallSurfacePolicy(
+            policy.PolicyId("a-policy"),
+            policy.RuleId("a-rule"),
+            tie_facts.path,
+            tie_facts.module,
+            (require_language(self).ResolvedCallTarget("missing"),),
+            "a-message",
+        )
+        tie_findings = policy.evaluate_policies(
+            (tie_facts,),
+            (later, earlier),
+        )
+        location = require_language(self).SourceLocation(tie_facts.path, 1, 0)
+        self.assertEqual(
+            tie_findings,
+            (
+                policy.PolicyFinding(
+                    earlier.policy_id,
+                    earlier.rule_id,
+                    location,
+                    earlier.message,
+                ),
+                policy.PolicyFinding(
+                    later.policy_id,
+                    later.rule_id,
+                    location,
+                    later.message,
+                ),
+            ),
+        )
 
     def test_actual_surface_over_policy_cap_is_evaluated_when_work_is_bounded(self) -> None:
         language = require_language(self)
@@ -232,16 +293,25 @@ class ArchitecturePolicyEvaluationTests(unittest.TestCase):
             calls=(invalid_call,),
         )
         finding_canary = RuntimeError("partial finding constructed")
-        with mock.patch.object(
-            policy.PolicyFinding,
-            "__post_init__",
-            side_effect=finding_canary,
+        key_canary = RuntimeError("canonical call key dispatched")
+        with (
+            mock.patch.object(
+                policy.PolicyFinding,
+                "__post_init__",
+                side_effect=finding_canary,
+            ),
+            mock.patch.object(
+                policy,
+                "_call_surface_key",
+                side_effect=key_canary,
+            ) as key_dispatch,
         ):
             error = captured_error(
                 self,
                 policy.PolicyEvaluationError,
                 lambda: policy.evaluate_policies((facts, imported, foreign), (value,)),
             )
+            key_dispatch.assert_not_called()
         self.assertEqual(str(error), "architecture policy occurrence work exceeds 65536")
 
     def test_batch_outer_and_nested_admission_is_exact_before_interpretation(self) -> None:
