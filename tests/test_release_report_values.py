@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields, FrozenInstanceError, is_dataclass
+from dataclasses import fields, FrozenInstanceError, is_dataclass, replace
 import unittest
 
 from release_build_fixture import (
@@ -180,6 +180,31 @@ class ReleaseReportValueTests(unittest.TestCase):
                     lambda values=values: release.ReleaseBuildReport(**values),
                 )
                 self.assertEqual(str(error), "release build report is invalid")
+
+    def test_source_date_epoch_is_exactly_zip_representable_in_utc(self) -> None:
+        release = require_release(self)
+        report = release_report(release)
+        minimum = 315_532_800
+        maximum = 4_354_819_199
+
+        for candidate in (minimum, maximum):
+            with self.subTest(accepted=candidate):
+                accepted = replace(report, source_date_epoch=candidate)
+                self.assertIs(type(accepted), release.ReleaseBuildReport)
+                self.assertEqual(accepted.source_date_epoch, candidate)
+
+        for candidate in (minimum - 1, maximum + 1, 253_402_300_800):
+            with self.subTest(rejected=candidate):
+                error = captured_error(
+                    self,
+                    release.ReleaseBuildReportError,
+                    lambda candidate=candidate: replace(
+                        report,
+                        source_date_epoch=candidate,
+                    ),
+                )
+                self.assertEqual(str(error), "release build report is invalid")
+                self.assertNotIn(str(candidate), str(error))
 
 
 if __name__ == "__main__":
