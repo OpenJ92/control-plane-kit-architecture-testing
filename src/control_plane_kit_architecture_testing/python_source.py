@@ -88,17 +88,11 @@ def _valid_import_fact(value: object) -> bool:
         value.imported_name, _MAX_COORDINATE_LENGTH
     ):
         return False
-    if value.bound_name is not None and not _valid_text(
-        value.bound_name, _MAX_COORDINATE_LENGTH
+    if value.alias_name is not None and not _valid_text(
+        value.alias_name, _MAX_COORDINATE_LENGTH
     ):
         return False
-    if value.imported_name is None:
-        if value.bound_name is None:
-            return False
-    elif value.imported_name == "*":
-        if value.bound_name is not None:
-            return False
-    elif value.bound_name is None:
+    if value.imported_name == "*" and value.alias_name is not None:
         return False
     return _valid_location(value.location)
 
@@ -116,19 +110,29 @@ class ImportFact:
 
     module: str
     imported_name: str | None
-    bound_name: str | None
+    alias_name: str | None
     location: SourceLocation
 
     def __post_init__(self) -> None:
         if (
             type(self.module) is not str
             or (self.imported_name is not None and type(self.imported_name) is not str)
-            or (self.bound_name is not None and type(self.bound_name) is not str)
+            or (self.alias_name is not None and type(self.alias_name) is not str)
             or type(self.location) is not SourceLocation
         ):
             _raise_fact_type_error()
         if not _valid_import_fact(self):
             _raise_fact_value_error()
+
+    @property
+    def bound_name(self) -> str | None:
+        if self.imported_name == "*":
+            return None
+        if self.alias_name is not None:
+            return self.alias_name
+        if self.imported_name is None:
+            return self.module.split(".", 1)[0]
+        return self.imported_name
 
     @property
     def qualified_name(self) -> str:
@@ -240,17 +244,14 @@ class CallFact:
 
 
 def _binding_for_import(value: ImportFact) -> AliasBinding | None:
-    if value.bound_name is None:
+    bound_name = value.bound_name
+    if bound_name is None:
         return None
-    if (
-        value.imported_name is None
-        and "." in value.module
-        and value.bound_name == value.module.split(".", 1)[0]
-    ):
-        qualified_name = value.bound_name
+    if value.imported_name is None and value.alias_name is None:
+        qualified_name = bound_name
     else:
         qualified_name = value.qualified_name
-    return AliasBinding(value.bound_name, qualified_name)
+    return AliasBinding(bound_name, qualified_name)
 
 
 def _derived_aliases(imports: tuple[ImportFact, ...]) -> tuple[AliasBinding, ...]:
@@ -397,16 +398,17 @@ def _import_facts(tree: ast.AST, path: str) -> tuple[ImportFact, ...]:
         if isinstance(node, ast.Import):
             for imported in node.names:
                 module = imported.name
-                bound_name = imported.asname or imported.name.split(".", 1)[0]
-                if not _valid_text(module, _MAX_COORDINATE_LENGTH) or not _valid_text(
-                    bound_name, _MAX_COORDINATE_LENGTH
+                alias_name = imported.asname
+                if not _valid_text(module, _MAX_COORDINATE_LENGTH) or (
+                    alias_name is not None
+                    and not _valid_text(alias_name, _MAX_COORDINATE_LENGTH)
                 ):
                     raise _fact_limit_error(path, imported)
                 values.append(
                     ImportFact(
                         module,
                         None,
-                        bound_name,
+                        alias_name,
                         _source_location(path, imported),
                     )
                 )
@@ -416,17 +418,17 @@ def _import_facts(tree: ast.AST, path: str) -> tuple[ImportFact, ...]:
                 raise _fact_limit_error(path, node)
             for imported in node.names:
                 imported_name = imported.name
-                bound_name = None if imported_name == "*" else imported.asname or imported_name
+                alias_name = imported.asname
                 if not _valid_text(imported_name, _MAX_COORDINATE_LENGTH) or (
-                    bound_name is not None
-                    and not _valid_text(bound_name, _MAX_COORDINATE_LENGTH)
+                    alias_name is not None
+                    and not _valid_text(alias_name, _MAX_COORDINATE_LENGTH)
                 ):
                     raise _fact_limit_error(path, imported)
                 values.append(
                     ImportFact(
                         module,
                         imported_name,
-                        bound_name,
+                        alias_name,
                         _source_location(path, imported),
                     )
                 )
