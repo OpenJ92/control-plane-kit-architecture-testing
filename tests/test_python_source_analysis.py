@@ -92,6 +92,13 @@ class PythonSourceAnalysisTests(unittest.TestCase):
 
         self.assertIs(type(wildcard.calls[0].target), language.UnresolvedCallTarget)
         self.assertEqual(wildcard.calls[1].target.qualified_name, "known.exact")
+        self.assertEqual(
+            tuple(
+                (value.local_name, value.qualified_name)
+                for value in conflict.aliases
+            ),
+            (("selected", "first"), ("selected", "second")),
+        )
         self.assertIs(type(conflict.calls[0].target), language.UnresolvedCallTarget)
         self.assertEqual(repeated.calls[0].target.qualified_name, "first")
         self.assertEqual(len(repeated.aliases), 2)

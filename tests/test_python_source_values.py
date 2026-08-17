@@ -34,6 +34,7 @@ class PythonSourceValueTests(unittest.TestCase):
             with self.subTest(name=name):
                 exact_type = getattr(language, name)
                 self.assertTrue(is_dataclass(exact_type))
+                self.assertTrue(exact_type.__dataclass_params__.frozen)
                 self.assertEqual(tuple(value.name for value in fields(exact_type)), field_names)
                 self.assertIn("__slots__", exact_type.__dict__)
                 self.assertIs(getattr(ROOT_PACKAGE, name), exact_type)
@@ -95,6 +96,51 @@ class PythonSourceValueTests(unittest.TestCase):
             language.AliasBinding("execute", ".helpers.run"),
             language.AliasBinding("execute", ".helpers.run"),
         )
+        maximum = language.ImportFact(
+            "m" * 512,
+            "i" * 512,
+            "b" * 512,
+            location,
+        )
+        self.assertEqual(maximum.module, "m" * 512)
+        self.assertEqual(maximum.imported_name, "i" * 512)
+        self.assertEqual(maximum.bound_name, "b" * 512)
+
+        bounded_invalid = (
+            ("m" * 513, "run", "run"),
+            ("bad\x00module", "run", "run"),
+            ("bad\ud800module", "run", "run"),
+            ("package", "i" * 513, "run"),
+            ("package", "bad\x00import", "run"),
+            ("package", "bad\ud800import", "run"),
+            ("package", "run", "b" * 513),
+            ("package", "run", "bad\x00binding"),
+            ("package", "run", "bad\ud800binding"),
+        )
+        bounded_errors = []
+        for module, imported_name, bound_name in bounded_invalid:
+            with self.subTest(
+                module=module[:8],
+                imported_name=imported_name[:8],
+                bound_name=bound_name[:8],
+            ):
+                bounded_errors.append(
+                    captured_error(
+                        self,
+                        (TypeError, ValueError),
+                        lambda module=module, imported_name=imported_name, bound_name=bound_name: language.ImportFact(
+                            module,
+                            imported_name,
+                            bound_name,
+                            location,
+                        ),
+                    )
+                )
+        self.assertEqual(len({str(error) for error in bounded_errors}), 1)
+        for error in bounded_errors:
+            self.assertLessEqual(len(str(error)), 160)
+            for candidate in ("mmmmmmmm", "iiiiiiii", "bbbbbbbb", "bad"):
+                self.assertNotIn(candidate, str(error))
 
         for local_name, qualified_name in (
             ("", "package.run"),
