@@ -137,7 +137,7 @@ class ReleaseReportValueTests(unittest.TestCase):
         self.assertEqual(report.repository, "OpenJ92/control-plane-kit-architecture-testing")
         self.assertEqual(report.intended_tag, "v0.1.0")
         self.assertEqual(report.version, "0.1.0")
-        self.assertEqual(report.source_date_epoch, 1_800_000_000)
+        self.assertEqual(report.source_date_epoch, 1_800_000_001)
 
         alternate_input = release.BuildInputArtifact(
             "build",

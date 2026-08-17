@@ -46,7 +46,7 @@ EXPECTED_REPORT_BYTES = (
     b'"python_version":"3.14.0",'
     b'"repository":"OpenJ92/control-plane-kit-architecture-testing",'
     b'"schema":"cpk.architecture-testing-release.v1",'
-    b'"source_date_epoch":1800000000,'
+    b'"source_date_epoch":1800000001,'
     b'"tree":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","version":"0.1.0"}\n'
 )
 
@@ -99,7 +99,7 @@ class ReleaseReportCodecTests(unittest.TestCase):
             encoded + b"\n",
             encoded.replace(b'"schema":', b'"schema":"duplicate","schema":', 1),
             encoded.replace(b'{"artifacts":', b'{"unknown":0,"artifacts":', 1),
-            encoded.replace(b'"source_date_epoch":1800000000', b'"source_date_epoch":true', 1),
+            encoded.replace(b'"source_date_epoch":1800000001', b'"source_date_epoch":true', 1),
             encoded.replace(b'"version":"0.1.0"', b'"version":"0.1.0",', 1),
             b"[]\n",
             b'{"candidate":"secret-value"}\n',

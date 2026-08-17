@@ -3,18 +3,24 @@ from __future__ import annotations
 from base64 import urlsafe_b64encode
 import csv
 from dataclasses import replace
+from email import policy
+from email.parser import BytesParser
 from hashlib import sha256
 import io
 from pathlib import Path
 import tarfile
 import tempfile
+import tomllib
 import unittest
+from unittest import mock
 import zipfile
 
 from release_build_fixture import (
     SDIST_GENERATED_MEMBERS,
+    SDIST_DIRECTORY_MEMBERS,
     SDIST_MEMBER_CONTENTS,
     SDIST_SOURCES_NAME,
+    SOURCE_DATE_EPOCH,
     WHEEL_MEMBER_CONTENTS,
     WHEEL_RECORD_NAME,
     captured_error,
@@ -24,6 +30,13 @@ from release_build_fixture import (
     write_artifacts,
     write_sdist,
     write_wheel,
+    zip_datetime,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WHEEL_METADATA_NAME = (
+    "control_plane_kit_architecture_testing-0.1.0.dist-info/METADATA"
 )
 
 
@@ -83,6 +96,19 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
         self.assertIsNone(release.verify_release_report(report, root))
         return report
 
+    def archive_metadata(self, wheel: Path, sdist: Path) -> tuple[bytes, bytes, bytes]:
+        with zipfile.ZipFile(wheel) as archive:
+            wheel_metadata = archive.read(WHEEL_METADATA_NAME)
+        with tarfile.open(sdist, mode="r:gz") as archive:
+            root = "control_plane_kit_architecture_testing-0.1.0"
+            package = archive.extractfile(f"{root}/PKG-INFO")
+            egg = archive.extractfile(
+                f"{root}/src/control_plane_kit_architecture_testing.egg-info/PKG-INFO"
+            )
+            self.assertIsNotNone(package)
+            self.assertIsNotNone(egg)
+            return wheel_metadata, package.read(), egg.read()
+
     def test_synthetic_archive_fixtures_are_complete_regular_and_self_consistent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -95,11 +121,21 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
                         info = archive.getinfo(name)
                         self.assertEqual(archive.read(name), expected)
                         self.assertEqual((info.external_attr >> 16) & 0o777, 0o644)
-                        self.assertEqual(info.date_time, (2026, 1, 1, 0, 0, 0))
+                        self.assertEqual(info.date_time, zip_datetime(SOURCE_DATE_EPOCH))
 
             with tarfile.open(sdist, mode="r:gz") as archive:
                 members = archive.getmembers()
-                self.assertTrue(members[0].isdir())
+                directories = tuple(member for member in members if member.isdir())
+                self.assertEqual(
+                    tuple(member.name for member in directories),
+                    (
+                        "control_plane_kit_architecture_testing-0.1.0",
+                        *(
+                            "control_plane_kit_architecture_testing-0.1.0/" + name
+                            for name in SDIST_DIRECTORY_MEMBERS
+                        ),
+                    ),
+                )
                 files = tuple(member for member in members if member.isfile())
                 self.assertEqual(
                     tuple(member.name for member in files),
@@ -118,10 +154,136 @@ class ReleaseArtifactVerifierTests(unittest.TestCase):
                             member.mode,
                             0o755 if relative == "test.sh" else 0o644,
                         )
-                        self.assertEqual(member.mtime, 1_800_000_000)
+                        self.assertEqual(member.mtime, SOURCE_DATE_EPOCH)
+
+            self.assertEqual(
+                SDIST_MEMBER_CONTENTS["pyproject.toml"],
+                (ROOT / "pyproject.toml").read_bytes(),
+            )
+            self.assertEqual(
+                zip_datetime(SOURCE_DATE_EPOCH),
+                (2027, 1, 15, 8, 0, 0),
+            )
 
             self.assertNotIn("release-report.json", WHEEL_MEMBER_CONTENTS)
             self.assertNotIn("release-report.json", SDIST_MEMBER_CONTENTS)
+
+    def test_wheel_and_sdist_metadata_match_the_complete_declared_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel, sdist = write_artifacts(root)
+            wheel_metadata, package_metadata, egg_metadata = self.archive_metadata(
+                wheel, sdist
+            )
+            self.assertEqual(wheel_metadata, package_metadata)
+            self.assertEqual(wheel_metadata, egg_metadata)
+
+            message = BytesParser(policy=policy.default).parsebytes(wheel_metadata)
+            project = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))[
+                "project"
+            ]
+            self.assertEqual(message["Name"], project["name"])
+            self.assertEqual(message["Version"], project["version"])
+            self.assertEqual(message["Summary"], project["description"])
+            self.assertEqual(message["Author"], project["authors"][0]["name"])
+            self.assertEqual(message["License-Expression"], project["license"])
+            self.assertEqual(message["Requires-Python"], project["requires-python"])
+            self.assertEqual(
+                message.get_all("Project-URL"),
+                [f"Repository, {project['urls']['Repository']}"],
+            )
+            self.assertEqual(message["Description-Content-Type"], "text/markdown")
+            self.assertEqual(message.get_payload(), (ROOT / "README.md").read_text("utf-8"))
+            self.assertIsNone(message.get_all("Requires-Dist"))
+            self.assertIsNone(message.get_all("Provides-Extra"))
+
+    def test_verifier_binds_tar_and_utc_zip_times_to_the_report_epoch(self) -> None:
+        release = require_release(self)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_artifacts(root)
+            report = release_report(release, root)
+            self.assertEqual(report.source_date_epoch, SOURCE_DATE_EPOCH)
+            self.assertIsNone(release.verify_release_report(report, root))
+
+            changed = replace(report, source_date_epoch=SOURCE_DATE_EPOCH + 2)
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(changed, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
+
+    def test_malformed_record_row_arity_is_categorical(self) -> None:
+        release = require_release(self)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rows = WHEEL_MEMBER_CONTENTS[WHEEL_RECORD_NAME].splitlines(keepends=True)
+            rows[0] = rows[0].rsplit(b",", 1)[0] + b"\n"
+            wheel = write_wheel(root, record_override=b"".join(rows))
+            write_sdist(root)
+            with zipfile.ZipFile(wheel) as archive:
+                parsed = tuple(
+                    csv.reader(
+                        io.StringIO(archive.read(WHEEL_RECORD_NAME).decode("utf-8"))
+                    )
+                )
+            self.assertEqual(len(parsed[0]), 2)
+            self.assertTrue(all(len(row) == 3 for row in parsed[1:]))
+
+            report = release_report(release, root)
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(report, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            held_members = dict(WHEEL_MEMBER_CONTENTS)
+            held_members[WHEEL_METADATA_NAME] = (
+                b"Metadata-Version: 2.4\n"
+                b"Name: control-plane-kit-architecture-testing\n"
+                b"Version: 0.1.0\n"
+                b"Requires-Python: >=3.11\n"
+                b"\n"
+            )
+            coherent_rows = WHEEL_MEMBER_CONTENTS[WHEEL_RECORD_NAME].splitlines(
+                keepends=True
+            )
+            coherent_rows[0] = coherent_rows[0].rsplit(b",", 1)[0] + b"\n"
+            write_wheel(
+                root,
+                members=held_members,
+                record_override=b"".join(coherent_rows),
+                source_date_epoch=1_767_225_600,
+            )
+            write_sdist(root, source_date_epoch=1_767_225_600)
+            report = release_report(
+                release,
+                root,
+                source_date_epoch=1_767_225_600,
+            )
+            error = captured_error(
+                self,
+                release.ReleaseBuildReportError,
+                lambda: release.verify_release_report(report, root),
+            )
+            self.assertEqual(str(error), "release artifact set is invalid")
+
+    def test_unexpected_artifact_internal_faults_remain_raw(self) -> None:
+        release = require_release(self)
+        for error_type in (TypeError, RuntimeError):
+            with self.subTest(error_type=error_type), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_artifacts(root)
+                report = release_report(release, root)
+                canary = error_type("internal canary")
+                with mock.patch.object(zipfile.ZipFile, "getinfo", side_effect=canary):
+                    with self.assertRaises(error_type) as raised:
+                        release.verify_release_report(report, root)
+                self.assertIs(raised.exception, canary)
 
     def test_negative_closure_fixtures_have_coherent_internal_manifests(self) -> None:
         for name, wheel_members, sdist_members in closure_mutations():

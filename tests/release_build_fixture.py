@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from base64 import urlsafe_b64encode
+from datetime import datetime, timezone
 from hashlib import sha256
 import importlib
 import io
@@ -13,12 +14,43 @@ import unittest
 import zipfile
 
 
+ROOT = Path(__file__).resolve().parents[1]
 MODULE_NAME = "test_support.release_report"
 PACKAGE_NAME = "control_plane_kit_architecture_testing"
 VERSION = "0.1.0"
 WHEEL_NAME = f"{PACKAGE_NAME}-{VERSION}-py3-none-any.whl"
 SDIST_NAME = f"{PACKAGE_NAME}-{VERSION}.tar.gz"
 SDIST_PREFIX = f"{PACKAGE_NAME}-{VERSION}"
+SOURCE_DATE_EPOCH = 1_800_000_001
+
+
+def source_metadata() -> bytes:
+    return (
+        b"Metadata-Version: 2.4\n"
+        b"Name: control-plane-kit-architecture-testing\n"
+        b"Version: 0.1.0\n"
+        b"Summary: Immutable architecture testing language for Control Plane Kit repositories\n"
+        b"Author: OpenJ92\n"
+        b"License-Expression: MIT\n"
+        b"Project-URL: Repository, https://github.com/OpenJ92/control-plane-kit-architecture-testing\n"
+        b"Requires-Python: >=3.11\n"
+        b"Description-Content-Type: text/markdown\n"
+        b"License-File: LICENSE\n"
+        b"\n"
+        + (ROOT / "README.md").read_bytes()
+    )
+
+
+def zip_datetime(source_date_epoch: int) -> tuple[int, int, int, int, int, int]:
+    instant = datetime.fromtimestamp(source_date_epoch, timezone.utc)
+    return (
+        instant.year,
+        instant.month,
+        instant.day,
+        instant.hour,
+        instant.minute,
+        instant.second - instant.second % 2,
+    )
 
 BUILD_INPUT_ROWS = (
     (
@@ -76,13 +108,7 @@ _WHEEL_MEMBERS_WITHOUT_RECORD = {
     f"{PACKAGE_NAME}/architecture_policy.py": b"# policy language\n",
     f"{PACKAGE_NAME}/py.typed": b"",
     f"{PACKAGE_NAME}/python_source.py": b"# source facts\n",
-    f"{PACKAGE_NAME}-{VERSION}.dist-info/METADATA": (
-        b"Metadata-Version: 2.4\n"
-        b"Name: control-plane-kit-architecture-testing\n"
-        b"Version: 0.1.0\n"
-        b"Requires-Python: >=3.11\n"
-        b"\n"
-    ),
+    f"{PACKAGE_NAME}-{VERSION}.dist-info/METADATA": source_metadata(),
     f"{PACKAGE_NAME}-{VERSION}.dist-info/WHEEL": (
         b"Wheel-Version: 1.0\n"
         b"Generator: setuptools (83.0.0)\n"
@@ -154,6 +180,16 @@ SDIST_GENERATED_MEMBERS = (
     "src/control_plane_kit_architecture_testing.egg-info/dependency_links.txt",
     "src/control_plane_kit_architecture_testing.egg-info/top_level.txt",
 )
+SDIST_DIRECTORY_MEMBERS = tuple(
+    sorted(
+        {
+            parent.as_posix()
+            for name in SDIST_SOURCE_MEMBERS + SDIST_GENERATED_MEMBERS
+            for parent in Path(name).parents
+            if parent.as_posix() != "."
+        }
+    )
+)
 SDIST_SOURCES_NAME = "src/control_plane_kit_architecture_testing.egg-info/SOURCES.txt"
 
 
@@ -173,29 +209,14 @@ SDIST_MEMBER_CONTENTS = {
 }
 SDIST_MEMBER_CONTENTS.update(
     {
-        "LICENSE": b"MIT License\n",
-        "README.md": b"# architecture testing fixture\n",
-        "pyproject.toml": (
-            b"[build-system]\n"
-            b'requires = ["setuptools==83.0.0"]\n'
-            b'build-backend = "setuptools.build_meta"\n\n'
-            b"[project]\n"
-            b'name = "control-plane-kit-architecture-testing"\n'
-            b'version = "0.1.0"\n'
-            b'requires-python = ">=3.11"\n'
-            b"dependencies = []\n"
-        ),
+        "LICENSE": (ROOT / "LICENSE").read_bytes(),
+        "README.md": (ROOT / "README.md").read_bytes(),
+        "pyproject.toml": (ROOT / "pyproject.toml").read_bytes(),
         "src/control_plane_kit_architecture_testing/__init__.py": (
             b'__version__ = "0.1.0"\n'
         ),
-        "PKG-INFO": _WHEEL_MEMBERS_WITHOUT_RECORD[
-            f"{PACKAGE_NAME}-{VERSION}.dist-info/METADATA"
-        ],
-        "src/control_plane_kit_architecture_testing.egg-info/PKG-INFO": (
-            _WHEEL_MEMBERS_WITHOUT_RECORD[
-                f"{PACKAGE_NAME}-{VERSION}.dist-info/METADATA"
-            ]
-        ),
+        "PKG-INFO": source_metadata(),
+        "src/control_plane_kit_architecture_testing.egg-info/PKG-INFO": source_metadata(),
         SDIST_SOURCES_NAME: b"",
         "src/control_plane_kit_architecture_testing.egg-info/dependency_links.txt": b"\n",
         "src/control_plane_kit_architecture_testing.egg-info/top_level.txt": (
@@ -307,7 +328,12 @@ def output_artifact(language: Any, path: Path) -> object:
     return language.OutputArtifact(path.name, len(content), sha256(content).hexdigest())
 
 
-def release_report(language: Any, artifact_root: Path | None = None) -> object:
+def release_report(
+    language: Any,
+    artifact_root: Path | None = None,
+    *,
+    source_date_epoch: int = SOURCE_DATE_EPOCH,
+) -> object:
     if artifact_root is None:
         artifacts = (
             language.OutputArtifact(WHEEL_NAME, 101, "1" * 64),
@@ -326,7 +352,7 @@ def release_report(language: Any, artifact_root: Path | None = None) -> object:
         "b" * 40,
         "v0.1.0",
         VERSION,
-        1_800_000_000,
+        source_date_epoch,
         (
             "python:3.14-slim@sha256:"
             "ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4"
@@ -344,15 +370,19 @@ def write_wheel(
     members: dict[str, bytes] | None = None,
     mode: int = 0o644,
     member_modes: dict[str, int] | None = None,
+    record_override: bytes | None = None,
+    source_date_epoch: int = SOURCE_DATE_EPOCH,
 ) -> Path:
     path = root / WHEEL_NAME
     selected = coherent_wheel_members(
         WHEEL_MEMBER_CONTENTS if members is None else members
     )
     selected_modes = {} if member_modes is None else member_modes
+    if record_override is not None:
+        selected[WHEEL_RECORD_NAME] = record_override
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name, content in selected.items():
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info = zipfile.ZipInfo(name, date_time=zip_datetime(source_date_epoch))
             info.create_system = 3
             info.external_attr = (
                 selected_modes.get(name, stat_mode(mode)) & 0xFFFF
@@ -367,6 +397,7 @@ def write_sdist(
     members: dict[str, bytes] | None = None,
     mode: int | None = None,
     member_types: dict[str, bytes] | None = None,
+    source_date_epoch: int = SOURCE_DATE_EPOCH,
 ) -> Path:
     path = root / SDIST_NAME
     selected = coherent_sdist_members(
@@ -378,8 +409,14 @@ def write_sdist(
             directory = tarfile.TarInfo(SDIST_PREFIX)
             directory.type = tarfile.DIRTYPE
             directory.mode = 0o755
-            directory.mtime = 1_800_000_000
+            directory.mtime = source_date_epoch
             archive.addfile(directory)
+            for name in SDIST_DIRECTORY_MEMBERS:
+                directory = tarfile.TarInfo(f"{SDIST_PREFIX}/{name}")
+                directory.type = tarfile.DIRTYPE
+                directory.mode = 0o755
+                directory.mtime = source_date_epoch
+                archive.addfile(directory)
             for name, content in selected.items():
                 info = tarfile.TarInfo(f"{SDIST_PREFIX}/{name}")
                 info.mode = (
@@ -387,7 +424,7 @@ def write_sdist(
                     if mode is not None
                     else (0o755 if name == "test.sh" else 0o644)
                 )
-                info.mtime = 1_800_000_000
+                info.mtime = source_date_epoch
                 info.type = selected_types.get(name, tarfile.REGTYPE)
                 if info.type == tarfile.REGTYPE:
                     info.size = len(content)
