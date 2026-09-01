@@ -58,7 +58,7 @@ repositories. Production packages and images must never depend on it.
 
 ## Branch Flow
 
-Use the topology documented in `GIT-FLOW.md`:
+Inherit only the branch topology documented in `GIT-FLOW.md`:
 
 ```text
 main
@@ -69,18 +69,19 @@ main
 Feature branches target `develop`. Promote `develop` to `main` only after a
 coherent reviewed vertical is accepted.
 
+The canonical proportional-evidence contract in this guide supersedes the
+legacy mandatory-red process in `GIT-FLOW.md`.
+
 ## Issue Loop
 
 For non-trivial work:
 
 ```text
-governing laws
-  -> child dry run
-    -> tests-only target red
-      -> smallest implementation
-        -> Docker package gate
-          -> skeptical review
-            -> dependent handoff
+current behavior and public contract
+  -> smallest bounded implementation and proportional tests
+    -> authoritative Docker-backed ./test.sh
+      -> concrete review
+        -> decision log and dependent handoff
 ```
 
 Split work when facts, policy interpretation, consumer integration, or
@@ -98,11 +99,6 @@ Operations, SDKs, interpreters, servers, secrets, products, providers, and
 entrypoints. It must not become a production dependency or an authority for
 application behavior.
 
-Issue #2 owns only the package and repository scaffold. Issue #3 owns the first
-structural source language. Issue #4 owns policy and finding semantics. Issue
-#5 owns reproducibility and first-consumer acceptance. Do not introduce those
-later concepts early.
-
 ## Testing
 
 Use `./test.sh` for authoritative validation. It runs standard-library
@@ -111,8 +107,9 @@ outside-source installation. Do not use host Python, pytest, hidden
 collection, `xfail`, proof-changing options, or skips.
 
 Tests must fail for missing behavior, not collection, imports, Docker setup,
-or malformed fixtures. Preserve tests-before-source red evidence for every
-semantic change.
+or malformed fixtures. Use tests-before-source target-red evidence when an
+explicit migration/parity contract or a necessary causality proof calls for it;
+it is not universal ceremony.
 
 ## Security And Effects
 
@@ -130,6 +127,6 @@ authority, and residual risk even when the answer is none.
 ## Review And Handoff
 
 Every PR receives a correctness, API, dependency, test-integrity, security,
-and packaging review. Record exact base/head coordinates, red-to-green
-evidence, chosen shape, rejected alternatives, risks, and the next child's
-accepted handoff.
+and packaging review. Record exact base/head coordinates, owning validation,
+chosen shape, rejected alternatives, risks, and the next child's accepted
+handoff.
