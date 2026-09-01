@@ -1,5 +1,57 @@
 # control-plane-kit-architecture-testing Agent Guide
 
+Canonical contract: `cpk-agent-contract/v1`
+
+Source: [CPK #1741](https://github.com/OpenJ92/control-plane-kit/issues/1741).
+This root guide carries the shared contract needed to work in this repository
+without another checkout. Local testing-tool rules may tighten it; they may not
+weaken authorization, Docker-only validation, truthful uncertainty, test
+ownership, or GitHub-memory requirements.
+
+## Shared Product Boundary
+
+CPK is a human-authorized, AI-assisted infrastructure control plane. Providers
+own external runtime truth. CPK owns topology, inspectable plans, execution of
+approved actions, durable history, and truthful bounded reports. Consequential
+mutation, destructive cleanup, public exposure, cost/capacity or credential
+changes, cross-provider movement, adoption, and ambiguous retry require
+explicit approval. Never fabricate success, ownership, graph advancement, or
+cleanup, and never blindly redispatch an ambiguous external mutation.
+
+This repository is pure development tooling. It does not grant provider,
+runtime, product, or control-plane authority and must not become a parallel
+implementation of another package's semantics.
+
+## Durable Memory And Collaboration
+
+GitHub issues, PRs, and material comments are durable project memory. Commits,
+hashes, local logs, `/tmp` packets, inventories, task messages, and chat are
+supporting coordinates only. Record decisions, releases, stops, evidence
+meaning, reviews, and handoffs on the governing issue or PR.
+
+When roles are assigned, North coordinates; Vale implements the bounded change;
+Meridian reviews independently and reports findings-first `PASS` or `HOLD`.
+Assignments and handoffs state the GitHub artifact, base/destination, scope,
+suite/prerequisites, authority limits, stop conditions, and next reviewer.
+Silence is not approval.
+
+Keep tests and review proportional. Architecture-testing owns a generic fact
+and policy language, not source-layout ceremony for every consumer. Consumer
+tests must not use it to police helper names, duplicate another package's state
+machine, or turn fixture examples into runtime invariants.
+
+## Shared Validation And Stops
+
+All executable validation uses this repository's Docker-backed `./test.sh` and
+its pinned Python images. Do not use host Python/PostgreSQL, venvs, host `pip`,
+alternate databases, shims, or custom wrappers. If the suite or prerequisite is
+missing, cannot start, or fails for apparatus, stop and ask; do not improvise,
+silently retry, rebaseline, or repair shared state.
+
+This repository has no provider/destructive authority. Stop when ownership,
+base/destination, suite prerequisites, or GitHub/local decision state is
+uncertain, or when a requested policy would encode another package's semantics.
+
 `control-plane-kit-architecture-testing` is a separately installable,
 standard-library-only development-tooling distribution for Control Plane Kit
 repositories. Production packages and images must never depend on it.
