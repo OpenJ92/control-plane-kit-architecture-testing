@@ -8,6 +8,20 @@ without another checkout. Local testing-tool rules may tighten it; they may not
 weaken authorization, Docker-only validation, truthful uncertainty, test
 ownership, or GitHub-memory requirements.
 
+## Implementation companions
+
+Read `docs/implementation/<repository-relative-source-path>.md` before changing
+covered code, retaining the source suffix before `.md`. Verify the source and
+its relevant imported contracts; use the actual dependency version selected by
+the consumer. Follow `docs/implementation/README.md` for local navigation.
+Every companion begins with its source link and a reminder to update it alongside
+source. Create, move, remove and update companions in the same change as their
+covered files; contract/pin changes also require affected-consumer source search.
+Before handoff, review the actual diff and record updated notes or review/no
+semantic change in the existing PR log. Reviewers check consequential claims
+against source. Initial pending notes do not block unrelated work; bring newly
+touched files current. No new report, freshness ledger or CI framework is needed.
+
 ## Shared Product Boundary
 
 CPK is a human-authorized, AI-assisted infrastructure control plane. Providers
