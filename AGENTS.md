@@ -72,19 +72,9 @@ repositories. Production packages and images must never depend on it.
 
 ## Branch Flow
 
-Inherit only the branch topology documented in `GIT-FLOW.md`:
-
-```text
-main
-  develop
-    codex/<issue-id>-<slug>
-```
-
-Feature branches target `develop`. Promote `develop` to `main` only after a
-coherent reviewed vertical is accepted.
-
-The canonical proportional-evidence contract in this guide supersedes the
-legacy mandatory-red process in `GIT-FLOW.md`.
+Start temporary issue branches from the accepted `main` commit and open pull
+requests into `main`. Follow [GIT-FLOW.md](GIT-FLOW.md) for integration and
+branch retirement, and the review and validation requirements below.
 
 ## Issue Loop
 
